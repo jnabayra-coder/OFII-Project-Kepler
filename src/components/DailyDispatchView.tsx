@@ -20,7 +20,8 @@ import {
   Check,
   Trash2,
   Bell,
-  FileSpreadsheet
+  FileSpreadsheet,
+  UserCheck
 } from 'lucide-react';
 import { DispatchRecord, DeliveryType, DispatchStatus, ForwardingDispatchNotification, ClientSummary, PhilippineArea } from '../types';
 import { MilitaryTimeInput } from './MilitaryTimeInput';
@@ -35,6 +36,7 @@ interface DailyDispatchViewProps {
   onOpenImportModal?: () => void;
   onUpdateDispatches: (updatedDispatches: DispatchRecord[]) => void;
   onRequestDeleteDispatch?: (dispatch: DispatchRecord) => void;
+  onAssignDriver?: (dispatch: DispatchRecord) => void;
   dispatchNotifications?: ForwardingDispatchNotification[];
   onCompleteDispatchNotification?: (notification: ForwardingDispatchNotification) => void;
   onDismissDispatchNotification?: (notificationId: string) => void;
@@ -48,6 +50,7 @@ export const DailyDispatchView: React.FC<DailyDispatchViewProps> = ({
   onOpenImportModal,
   onUpdateDispatches,
   onRequestDeleteDispatch,
+  onAssignDriver,
   dispatchNotifications = [],
   onCompleteDispatchNotification,
   onDismissDispatchNotification,
@@ -799,10 +802,16 @@ export const DailyDispatchView: React.FC<DailyDispatchViewProps> = ({
                         {record.consignee}
                       </td>
 
-                      {/* 9. Truck / Plate Number */}
+                      {/* 9. Truck / Plate Number / Driver */}
                       <td className="py-2.5 px-3 border-r border-slate-200">
                         <div className="font-semibold text-slate-900">{record.truckProvider}</div>
                         <div className="font-mono text-[11px] text-slate-500">{record.plateNumber}</div>
+                        {record.driverName || record.assignedDriver ? (
+                          <div className="text-[10px] text-blue-700 font-semibold flex items-center gap-1 mt-0.5" title="Assigned Driver">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                            <span className="truncate max-w-[120px]">{record.driverName || record.assignedDriver}</span>
+                          </div>
+                        ) : null}
                       </td>
 
                       {/* 10. Time Arrived */}
@@ -840,6 +849,19 @@ export const DailyDispatchView: React.FC<DailyDispatchViewProps> = ({
                             <Eye className="w-3 h-3" />
                             <span>Details</span>
                           </span>
+                          {onAssignDriver && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onAssignDriver(record);
+                              }}
+                              className="p-1 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                              title="Assign Delivery Driver"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           {onRequestDeleteDispatch && (
                             <button
                               type="button"

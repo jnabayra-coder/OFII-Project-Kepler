@@ -32,11 +32,14 @@ interface ClientManagementViewProps {
   shipments: ShipmentRecord[];
   dispatches: DispatchRecord[];
   forwardingRecords: ForwardingProgressiveRecord[];
-  onOpenAddClient: () => void;
-  onViewClient: (client: ClientSummary) => void;
+  onOpenAddClient?: () => void;
+  onOpenAddClientModal?: () => void;
+  onViewClient?: (client: ClientSummary) => void;
+  onSelectClient?: (client: ClientSummary) => void;
   onEditClient: (client: ClientSummary) => void;
   onDeactivateClient: (client: ClientSummary) => void;
   onReactivateClient: (client: ClientSummary) => void;
+  onDeleteClient?: (client: ClientSummary) => void;
 }
 
 export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
@@ -45,11 +48,16 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
   dispatches,
   forwardingRecords,
   onOpenAddClient,
+  onOpenAddClientModal,
   onViewClient,
+  onSelectClient,
   onEditClient,
   onDeactivateClient,
   onReactivateClient,
+  onDeleteClient,
 }) => {
+  const handleOpenAdd = onOpenAddClient || onOpenAddClientModal || (() => {});
+  const handleViewClient = onViewClient || onSelectClient || (() => {});
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ACTIVE');
@@ -60,30 +68,33 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
     const statsMap: Record<string, { total: number; active: number }> = {};
 
     clients.forEach(c => {
-      // Find matching shipments
-      const matchingShipments = shipments.filter(
-        s => !s.isDeleted && (
-          (s.clientId && s.clientId === c.id) ||
-          s.client.trim().toLowerCase() === c.name.trim().toLowerCase()
+      // Find master forwarding records (Single Source of Truth for Shipments)
+      const matchingForwarding = (forwardingRecords || []).filter(
+        f => !f.isDeleted && (
+          (f.clientId && f.clientId === c.id) ||
+          f.client.trim().toLowerCase() === c.name.trim().toLowerCase()
         )
       );
 
-      // Find matching dispatches
-      const matchingDispatches = dispatches.filter(
-        d => !d.isDeleted && d.clientName.trim().toLowerCase() === c.name.trim().toLowerCase()
-      );
+      // Fallback to shipments if forwarding records empty for this client
+      const matchingShipments = matchingForwarding.length > 0
+        ? matchingForwarding
+        : (shipments || []).filter(
+            s => !s.isDeleted && (
+              (s.clientId && s.clientId === c.id) ||
+              s.client.trim().toLowerCase() === c.name.trim().toLowerCase()
+            )
+          );
 
-      // Total count
-      const totalCount = Math.max(
-        matchingShipments.length,
-        matchingDispatches.length,
-        (c.activeShipments || 0) + (c.deliveredThisMonth || 0)
-      );
+      // Master shipment total count
+      const totalCount = matchingShipments.length > 0 
+        ? matchingShipments.length 
+        : ((c.activeShipments || 0) + (c.deliveredThisMonth || 0));
 
-      // Active count
-      const activeCount = matchingShipments.filter(s => s.status !== 'Delivered').length ||
-        matchingDispatches.filter(d => d.status !== 'Delivered').length ||
-        (c.activeShipments || 0);
+      // Active in-flight shipment count
+      const activeCount = matchingShipments.filter(
+        s => (s as any).deliveryStatus !== 'Delivered' && (s as any).status !== 'Delivered'
+      ).length;
 
       statsMap[c.id] = {
         total: totalCount,
@@ -165,7 +176,7 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
         <div>
           <button
             type="button"
-            onClick={onOpenAddClient}
+            onClick={handleOpenAdd}
             className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-md shadow-sm transition-colors cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -333,7 +344,7 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
                     </p>
                     <button
                       type="button"
-                      onClick={onOpenAddClient}
+                      onClick={handleOpenAdd}
                       className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded shadow-xs cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" />
@@ -362,7 +373,7 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
                         <div className="flex flex-col">
                           <button
                             type="button"
-                            onClick={() => onViewClient(client)}
+                            onClick={() => handleViewClient(client)}
                             className="font-bold text-slate-900 hover:text-blue-700 text-left transition-colors cursor-pointer text-xs"
                           >
                             {client.name}
@@ -433,7 +444,7 @@ export const ClientManagementView: React.FC<ClientManagementViewProps> = ({
                           {/* VIEW Action */}
                           <button
                             type="button"
-                            onClick={() => onViewClient(client)}
+                            onClick={() => handleViewClient(client)}
                             className="px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors cursor-pointer"
                           >
                             VIEW

@@ -6,12 +6,17 @@ import {
   ForwardingProgressiveRecord, 
   ForwardingDispatchNotification,
   PODNotification,
+  DriverAssignmentNotification,
   BusinessRule,
   DatabaseSyncStatus,
   OperationalRecordType,
   UnifiedShipment,
   DashboardSummary,
-  ImportHistoryRecord
+  ImportHistoryRecord,
+  UserProfile,
+  UserRole,
+  OFIIDriver,
+  DeliveryAssignment
 } from '../types';
 import { 
   supabase, 
@@ -38,8 +43,12 @@ import {
   initialDispatches, 
   initialShipments, 
   initialForwardingRecords, 
-  initialDispatchNotifications 
+  initialDispatchNotifications,
+  initialDriverNotifications,
+  DEFAULT_ENCODER_USER,
+  OFII_DRIVERS_ROSTER
 } from '../data/mockData';
+import { getRegisteredUsers, OFII_HELPERS_ROSTER } from '../data/userAccounts';
 import { 
   computeDeliveryPerformance, 
   computePodPerformance,
@@ -60,12 +69,41 @@ interface DataContextValue {
   dashboardSummary: DashboardSummary;
   syncStatus: DatabaseSyncStatus;
   importHistory: ImportHistoryRecord[];
+  currentUserProfile: UserProfile;
+  driverNotifications: DriverAssignmentNotification[];
+  deliveryAssignments: DeliveryAssignment[];
   isLoading: boolean;
   loadingMessage: string;
   errorMessage: string | null;
   toastMessage: { message: string; subtext?: string } | null;
   
   // Actions
+  setCurrentUserProfile: (user: UserProfile) => void;
+  createDeliveryAssignment: (assignmentData: {
+    originalDeliveryId: string;
+    driver: string;
+    driverId?: string;
+    helper: string;
+    helperId?: string;
+    vehicle: string;
+    plateNumber: string;
+    assignmentDate?: string;
+    assignmentTime?: string;
+    assignmentStatus?: string;
+    assignmentId?: string;
+  }) => Promise<DeliveryAssignment>;
+  getDeliveryAssignmentByOriginalDeliveryId: (originalDeliveryId: string) => DeliveryAssignment | undefined;
+  assignDriverToDelivery: (
+    recordId: string, 
+    driverName: string, 
+    plateNumber?: string, 
+    vehicleType?: string, 
+    helperName?: string,
+    assignedDriverId?: string,
+    assignedHelperId?: string
+  ) => Promise<void>;
+  markDriverNotificationAsRead: (id: string) => Promise<void>;
+  markAllDriverNotificationsAsRead: (driverName?: string) => Promise<void>;
   addClient: (clientData: Partial<ClientSummary>) => Promise<ClientSummary>;
   updateClient: (client: ClientSummary) => Promise<void>;
   toggleClientStatus: (id: string, deactivationReason?: string) => Promise<void>;
@@ -104,6 +142,18 @@ interface DataContextValue {
   completeNotification: (id: string, dispatchId: string) => Promise<void>;
   markPodNotificationAsRead: (id: string) => Promise<void>;
   markAllPodNotificationsAsRead: () => Promise<void>;
+  updateDriverProgress: (
+    recordId: string,
+    currentLocation: string,
+    progressStatus: 'Assigned' | 'In Transit' | 'Out for Delivery' | 'Delivered'
+  ) => Promise<void>;
+  markDeliveryAsDelivered: (params: {
+    recordId: string;
+    receiverName: string;
+    dateReceived: string;
+    signature?: string;
+    remarks?: string;
+  }) => Promise<void>;
   refreshData: (showMessage?: boolean) => Promise<void>;
   dismissToast: () => void;
   showSuccessToast: (message: string, subtext?: string) => void;
@@ -130,6 +180,52 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return syncPodNotifications(initialForwardingRecords, initialClients, []);
   });
   const [businessRules, setBusinessRules] = useState<BusinessRule[]>([]);
+  
+  const [currentUserProfile, setCurrentUserProfileState] = useState<UserProfile>(() => {
+    try {
+      const cached = localStorage.getItem('ofii_current_user_profile');
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {
+      // ignore
+    }
+    return DEFAULT_ENCODER_USER;
+  });
+
+  const setCurrentUserProfile = useCallback((user: UserProfile) => {
+    setCurrentUserProfileState(user);
+    try {
+      localStorage.setItem('ofii_current_user_profile', JSON.stringify(user));
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  const [driverNotifications, setDriverNotifications] = useState<DriverAssignmentNotification[]>(() => {
+    try {
+      const cached = localStorage.getItem('ofii_cache_v4_driver_notifications');
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {
+      // ignore
+    }
+    return initialDriverNotifications;
+  });
+
+  // Phase 1: Delivery Assignments (Separate record linked to original master delivery)
+  const [deliveryAssignments, setDeliveryAssignments] = useState<DeliveryAssignment[]>(() => {
+    try {
+      const cached = localStorage.getItem('ofii_delivery_assignments_v1');
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch (e) {
+      console.warn('[Cache Load] Delivery Assignments error:', e);
+    }
+    return [];
+  });
   const [importHistory, setImportHistory] = useState<ImportHistoryRecord[]>([
     {
       id: 'IMP-HIST-001',
@@ -376,35 +472,45 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const activeForwarding = forwardingRecords.filter((f) => !f.isDeleted);
     const activeShipments = shipments.filter((s) => !s.isDeleted);
 
-    // Total dispatches and shipments
-    const totalCount = Math.max(activeDispatches.length, activeForwarding.length, activeShipments.length);
+    // Total dispatches and shipments - SINGLE SOURCE OF TRUTH: FORWARDING PROGRESSIVE REPORT
+    const totalCount = activeForwarding.length > 0 
+      ? activeForwarding.length 
+      : activeShipments.length;
 
-    const deliveredCount = activeDispatches.filter((d) => d.status === 'Delivered').length;
-    const delayedCount = activeDispatches.filter((d) => d.status === 'Delayed').length;
-    const inTransitCount = activeDispatches.filter((d) => d.status !== 'Delivered').length;
+    const deliveredCount = activeForwarding.length > 0
+      ? activeForwarding.filter((f) => f.deliveryStatus === 'Delivered' || Boolean(f.actualDeliveryDate)).length
+      : activeDispatches.filter((d) => d.status === 'Delivered').length;
+
+    const delayedCount = activeForwarding.length > 0
+      ? activeForwarding.filter((f) => f.deliveryStatus === 'Delayed' || f.deliveryPerformance === 'MISSED').length
+      : activeDispatches.filter((d) => d.status === 'Delayed').length;
+
+    const inTransitCount = activeForwarding.length > 0
+      ? activeForwarding.filter((f) => f.deliveryStatus === 'In Transit').length
+      : activeDispatches.filter((d) => d.status === 'In Transit').length;
 
     // On-Time Delivery %
-    const forwardingDelivered = activeForwarding.filter((f) => f.deliveryStatus === 'Delivered');
+    const forwardingDelivered = activeForwarding.filter((f) => f.deliveryStatus === 'Delivered' || Boolean(f.actualDeliveryDate));
     const forwardingHits = forwardingDelivered.filter((f) => f.deliveryPerformance === 'HIT');
     const onTimeRate = forwardingDelivered.length > 0 
       ? Math.round((forwardingHits.length / forwardingDelivered.length) * 1000) / 10
-      : (deliveredCount > 0 ? 96.5 : 98.0);
+      : 0;
 
     // Active Trucks
     const uniquePlates = new Set(activeDispatches.filter(d => d.plateNumber && d.status !== 'Delivered').map(d => d.plateNumber));
-    const activeTrucks = Math.max(uniquePlates.size, 1);
+    const activeTrucks = uniquePlates.size;
 
     // Total Cases/Boxes
-    const totalBoxes = activeDispatches.reduce((sum, d) => sum + (d.quantityCasesBoxes || 0), 0);
+    const totalBoxes = activeDispatches.reduce((sum, d) => sum + (Number(d.quantityCasesBoxes) || 0), 0);
 
     return {
-      totalShipments: totalCount > 0 ? totalCount : 1,
+      totalShipments: totalCount,
       inTransit: inTransitCount,
       delivered: deliveredCount,
       delayed: delayedCount,
       onTimePercentage: onTimeRate,
       activeTrucks: activeTrucks,
-      totalBoxesToday: totalBoxes > 0 ? totalBoxes : 1500,
+      totalBoxesToday: totalBoxes,
     };
   }, [dispatches, forwardingRecords, shipments]);
 
@@ -553,6 +659,35 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       completeNotification(matchingNotif.id, newDispatch.id);
     }
 
+    // Synchronize operational fields to matching master Forwarding record without duplicating shipments
+    setForwardingRecords((prev) =>
+      prev.map((f) => {
+        if (
+          (newDispatch.podNumber && f.podNumber && f.podNumber.trim().toLowerCase() === newDispatch.podNumber.trim().toLowerCase()) ||
+          (newDispatch.manifestNumber && f.referenceNumber && f.referenceNumber.trim().toLowerCase() === newDispatch.manifestNumber.trim().toLowerCase())
+        ) {
+          return {
+            ...f,
+            plateNumber: newDispatch.plateNumber || f.plateNumber,
+            truckProvider: newDispatch.truckProvider || f.truckProvider,
+            driverName: newDispatch.driverName || f.driverName,
+            timeArrived: newDispatch.timeArrived || f.timeArrived,
+            startLoadingTime: newDispatch.startLoadingTime || f.startLoadingTime,
+            endLoadingTime: newDispatch.endLoadingTime || f.endLoadingTime,
+            actualDepartureTime: newDispatch.actualDepartureTime || f.actualDepartureTime,
+            truckArrivalTime: newDispatch.truckArrivalTime || f.truckArrivalTime,
+            loadingStartTime: newDispatch.loadingStartTime || f.loadingStartTime,
+            loadingEndTime: newDispatch.loadingEndTime || f.loadingEndTime,
+            departureTime: newDispatch.departureTime || f.departureTime,
+            deliveryStatus: newDispatch.status === 'Delivered'
+              ? 'Delivered'
+              : (newDispatch.status === 'Delayed' ? 'Delayed' : (newDispatch.status === 'Departed' || newDispatch.status === 'In Transit' ? 'In Transit' : f.deliveryStatus)),
+          };
+        }
+        return f;
+      })
+    );
+
     broadcastDataChange('DISPATCH_ADDED', newDispatch);
     showSuccessToast('Dispatch saved successfully.', `POD: ${newDispatch.podNumber} for ${newDispatch.clientName}`);
     return newDispatch;
@@ -593,6 +728,36 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return next;
     });
     
+    // Also synchronize corresponding master Forwarding record if present
+    setForwardingRecords((prev) =>
+      prev.map((f) => {
+        if (
+          (normalizedUpdated.podNumber && f.podNumber && f.podNumber.trim().toLowerCase() === normalizedUpdated.podNumber.trim().toLowerCase()) ||
+          (normalizedUpdated.manifestNumber && f.referenceNumber && f.referenceNumber.trim().toLowerCase() === normalizedUpdated.manifestNumber.trim().toLowerCase()) ||
+          f.id === normalizedUpdated.id
+        ) {
+          return {
+            ...f,
+            plateNumber: normalizedUpdated.plateNumber || f.plateNumber,
+            truckProvider: normalizedUpdated.truckProvider || f.truckProvider,
+            driverName: normalizedUpdated.driverName || f.driverName,
+            timeArrived: normalizedUpdated.timeArrived || f.timeArrived,
+            startLoadingTime: normalizedUpdated.startLoadingTime || f.startLoadingTime,
+            endLoadingTime: normalizedUpdated.endLoadingTime || f.endLoadingTime,
+            actualDepartureTime: normalizedUpdated.actualDepartureTime || f.actualDepartureTime,
+            truckArrivalTime: normalizedUpdated.timeArrived || f.truckArrivalTime,
+            loadingStartTime: normalizedUpdated.startLoadingTime || f.loadingStartTime,
+            loadingEndTime: normalizedUpdated.endLoadingTime || f.loadingEndTime,
+            departureTime: normalizedUpdated.actualDepartureTime || f.departureTime,
+            deliveryStatus: normalizedUpdated.status === 'Delivered'
+              ? 'Delivered'
+              : (normalizedUpdated.status === 'Delayed' ? 'Delayed' : (normalizedUpdated.status === 'Departed' || normalizedUpdated.status === 'In Transit' ? 'In Transit' : f.deliveryStatus)),
+          };
+        }
+        return f;
+      })
+    );
+
     // Also synchronize corresponding shipment if present
     setShipments((prev) =>
       prev.map((s) => {
@@ -713,6 +878,32 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setForwardingRecords((prev) => [newRecord, ...prev.filter((f) => f.id !== newRecord.id)]);
 
+    // Mirror to shipments with exact same ID & POD so system-wide shipment count is unified
+    const newShipment: ShipmentRecord = {
+      id: newRecord.id,
+      client: newRecord.client,
+      clientId: newRecord.clientId,
+      monthStarted: new Date().toLocaleDateString('en-US', { month: 'long' }),
+      bookedDate: newRecord.actualDispatchDate,
+      pickupDate: newRecord.actualDispatchDate,
+      deliveryDate: newRecord.actualDeliveryDate || newRecord.plannedDeliveryDate,
+      consignee: newRecord.consignee,
+      destination: `${newRecord.destinationCode || ''} - ${newRecord.consignee}`,
+      modeOfShipment: newRecord.modeOfShipment,
+      quantityBoxes: newRecord.quantity,
+      actualWeightKg: newRecord.actualWeightKg,
+      status: newRecord.deliveryStatus === 'Delivered' ? 'Delivered' : (newRecord.deliveryStatus === 'Delayed' ? 'Delayed' : (newRecord.deliveryStatus === 'In Transit' ? 'In Transit' : 'Booked')),
+      area: newRecord.area,
+      podNumber: newRecord.podNumber,
+      plateNumber: newRecord.plateNumber,
+      manifestNumber: newRecord.referenceNumber,
+      awbNumber: newRecord.referenceNumber,
+      datePodReceived: newRecord.dateOfPodReturn,
+      podStatus: newRecord.podStatus,
+      isDeleted: false,
+    };
+    setShipments((prev) => [newShipment, ...prev.filter((s) => s.id !== newShipment.id && s.podNumber !== newShipment.podNumber)]);
+
     // 10. FORWARDING -> DISPATCH WORKFLOW: Create dispatch notification for required completion
     const newNotification: ForwardingDispatchNotification = {
       id: `FDN-2026-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -780,6 +971,56 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const newIds = new Set(records.map((r) => r.id));
       return [...records, ...prev.filter((p) => !newIds.has(p.id))];
     });
+
+    // Also synchronize to shipments collection
+    const syncedShipments: ShipmentRecord[] = records.map((rec) => ({
+      id: rec.id,
+      client: rec.client,
+      clientId: rec.clientId,
+      monthStarted: new Date().toLocaleDateString('en-US', { month: 'long' }),
+      bookedDate: rec.actualDispatchDate,
+      pickupDate: rec.actualDispatchDate,
+      deliveryDate: rec.actualDeliveryDate || rec.plannedDeliveryDate,
+      consignee: rec.consignee,
+      destination: `${rec.destinationCode || ''} - ${rec.consignee}`,
+      modeOfShipment: rec.modeOfShipment,
+      quantityBoxes: rec.quantity,
+      actualWeightKg: rec.actualWeightKg,
+      status: rec.deliveryStatus === 'Delivered' ? 'Delivered' : (rec.deliveryStatus === 'Delayed' ? 'Delayed' : (rec.deliveryStatus === 'In Transit' ? 'In Transit' : 'Booked')),
+      area: rec.area,
+      podNumber: rec.podNumber,
+      plateNumber: rec.plateNumber,
+      manifestNumber: rec.referenceNumber,
+      awbNumber: rec.referenceNumber,
+      datePodReceived: rec.dateOfPodReturn,
+      podStatus: rec.podStatus,
+      isDeleted: false,
+    }));
+    const newRecordIds = new Set(records.map((r) => r.id));
+    setShipments((prev) => [...syncedShipments, ...prev.filter((p) => !newRecordIds.has(p.id))]);
+
+    // Create notifications for Daily Dispatching for imported forwarding records
+    const newNotifs: ForwardingDispatchNotification[] = records.map((rec, i) => ({
+      id: `FDN-IMP-${Date.now().toString().slice(-6)}-${i + 1}`,
+      forwardingRecordId: rec.id,
+      client: rec.client,
+      clientId: rec.clientId,
+      consignee: rec.consignee,
+      podNumber: rec.podNumber,
+      referenceNumber: rec.referenceNumber,
+      deliveryDate: rec.actualDispatchDate,
+      modeOfShipment: rec.modeOfShipment,
+      area: rec.area,
+      quantity: rec.quantity,
+      unit: rec.unit,
+      destination: `${rec.destinationCode || ''} - ${rec.consignee}`,
+      destinationCode: rec.destinationCode,
+      source: 'Forwarding Progressive Report',
+      message: 'Imported shipment requires dispatch completion.',
+      status: 'NEW',
+      createdAt: new Date().toISOString(),
+    }));
+    setNotifications((prev) => [...newNotifs, ...prev]);
 
     // Track in Import History
     const historyEntry: ImportHistoryRecord = {
@@ -888,6 +1129,37 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     setImportHistory((prev) => [historyEntry, ...prev]);
 
+    // Synchronize operational fields to matching master Forwarding records without duplicating shipments
+    setForwardingRecords((prev) =>
+      prev.map((f) => {
+        const matchingDispatch = newDispatches.find(
+          (d) =>
+            (d.podNumber && f.podNumber && d.podNumber.trim().toLowerCase() === f.podNumber.trim().toLowerCase()) ||
+            (d.manifestNumber && f.referenceNumber && d.manifestNumber.trim().toLowerCase() === f.referenceNumber.trim().toLowerCase())
+        );
+        if (matchingDispatch) {
+          return {
+            ...f,
+            plateNumber: matchingDispatch.plateNumber || f.plateNumber,
+            truckProvider: matchingDispatch.truckProvider || f.truckProvider,
+            driverName: matchingDispatch.driverName || f.driverName,
+            timeArrived: matchingDispatch.timeArrived || f.timeArrived,
+            startLoadingTime: matchingDispatch.startLoadingTime || f.startLoadingTime,
+            endLoadingTime: matchingDispatch.endLoadingTime || f.endLoadingTime,
+            actualDepartureTime: matchingDispatch.actualDepartureTime || f.actualDepartureTime,
+            truckArrivalTime: matchingDispatch.truckArrivalTime || f.truckArrivalTime,
+            loadingStartTime: matchingDispatch.loadingStartTime || f.loadingStartTime,
+            loadingEndTime: matchingDispatch.loadingEndTime || f.loadingEndTime,
+            departureTime: matchingDispatch.departureTime || f.departureTime,
+            deliveryStatus: matchingDispatch.status === 'Delivered'
+              ? 'Delivered'
+              : (matchingDispatch.status === 'Delayed' ? 'Delayed' : (matchingDispatch.status === 'Departed' || matchingDispatch.status === 'In Transit' ? 'In Transit' : f.deliveryStatus)),
+          };
+        }
+        return f;
+      })
+    );
+
     // Complete any matching pending notifications for dispatch
     newDispatches.forEach((d) => {
       const matchingNotif = notifications.find(
@@ -916,6 +1188,30 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     setForwardingRecords((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+    setShipments((prev) =>
+      prev.map((s) => {
+        if (s.id === updated.id || (updated.podNumber && s.podNumber === updated.podNumber)) {
+          return {
+            ...s,
+            client: updated.client || s.client,
+            clientId: updated.clientId || s.clientId,
+            consignee: updated.consignee || s.consignee,
+            destination: `${updated.destinationCode || ''} - ${updated.consignee}`,
+            modeOfShipment: updated.modeOfShipment || s.modeOfShipment,
+            quantityBoxes: updated.quantity || s.quantityBoxes,
+            actualWeightKg: updated.actualWeightKg || s.actualWeightKg,
+            deliveryDate: updated.actualDeliveryDate || updated.plannedDeliveryDate || s.deliveryDate,
+            status: updated.deliveryStatus === 'Delivered' ? 'Delivered' : (updated.deliveryStatus === 'Delayed' ? 'Delayed' : (updated.deliveryStatus === 'In Transit' ? 'In Transit' : 'Booked')),
+            podNumber: updated.podNumber || s.podNumber,
+            datePodReceived: updated.dateOfPodReturn || s.datePodReceived,
+            podStatus: updated.podStatus || s.podStatus,
+            plateNumber: updated.plateNumber || s.plateNumber,
+            manifestNumber: updated.referenceNumber || s.manifestNumber,
+          };
+        }
+        return s;
+      })
+    );
     broadcastDataChange('FORWARDING_UPDATED', updated);
     showSuccessToast('Changes saved successfully.', `Forwarding Record ${updated.podNumber} updated.`);
   };
@@ -1116,6 +1412,541 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     showSuccessToast('All POD notifications marked as read.');
   };
 
+  const assignDriverToDelivery = async (
+    recordId: string,
+    driverName: string,
+    plateNumber?: string,
+    vehicleType?: string,
+    helperName?: string,
+    assignedDriverId?: string,
+    assignedHelperId?: string
+  ): Promise<void> => {
+    // 1. Locate the record across forwardingRecords, dispatches, or shipments
+    const targetForwarding = forwardingRecords.find(r => r.id === recordId || r.podNumber === recordId);
+    const targetDispatch = dispatches.find(d => d.id === recordId || d.podNumber === recordId);
+    const targetShipment = shipments.find(s => s.id === recordId || s.podNumber === recordId);
+
+    const podNumber = targetForwarding?.podNumber || targetDispatch?.podNumber || targetShipment?.podNumber || recordId;
+    const client = targetForwarding?.client || targetDispatch?.clientName || targetShipment?.client || 'OFII Client';
+    const consignee = targetForwarding?.consignee || targetDispatch?.consignee || targetShipment?.consignee || 'Consignee Facility';
+    const area = targetForwarding?.area || targetDispatch?.area || targetShipment?.area || 'NCR';
+    const destination = targetForwarding?.destination || targetDispatch?.destination || targetShipment?.destination || '';
+    const deliveryDate = targetForwarding?.plannedDeliveryDate || targetDispatch?.plannedDeliveryDate || targetShipment?.pickupDate || new Date().toISOString().split('T')[0];
+    const dispatchTime = targetForwarding?.departureTime || targetDispatch?.departureTime || targetForwarding?.actualDepartureTime || '08:00 AM';
+    const vehicle = vehicleType || targetForwarding?.courier || targetDispatch?.truckProvider || 'OFII Fleet Logistics';
+    const plate = plateNumber || targetForwarding?.plateNumber || targetDispatch?.plateNumber || targetShipment?.plateNumber || 'TBD';
+    const quantity = targetForwarding?.quantity || targetDispatch?.quantityCasesBoxes || targetShipment?.quantityBoxes || 0;
+    const unit = targetForwarding?.unit || targetDispatch?.unit || 'Boxes';
+    const refNum = targetForwarding?.referenceNumber || targetDispatch?.manifestNumber || targetShipment?.drNumber || targetShipment?.podNumber;
+
+    // Resolve Driver ID from registered users or roster
+    const registeredUsers = getRegisteredUsers();
+    const matchedUser = registeredUsers.find(u => 
+      (assignedDriverId && (u.id === assignedDriverId || u.employeeId === assignedDriverId || u.driverId === assignedDriverId)) ||
+      u.name.toLowerCase().trim() === driverName.toLowerCase().trim() ||
+      (u.driverName && u.driverName.toLowerCase().trim() === driverName.toLowerCase().trim())
+    );
+    const matchedRosterDriver = OFII_DRIVERS_ROSTER.find(d => d.name.toLowerCase().trim() === driverName.toLowerCase().trim());
+    const finalDriverId = assignedDriverId || matchedUser?.driverId || matchedUser?.employeeId || matchedUser?.id || matchedRosterDriver?.id || 'DRV-001';
+
+    // Resolve Helper ID from helper roster
+    const matchedHelper = OFII_HELPERS_ROSTER.find(h =>
+      (assignedHelperId && h.id === assignedHelperId) ||
+      (helperName && h.name.toLowerCase().trim() === helperName.toLowerCase().trim())
+    );
+    const finalHelperId = assignedHelperId || matchedHelper?.id || undefined;
+    const nowIso = new Date().toISOString();
+
+    // 2. Update Forwarding Records
+    setForwardingRecords(prev => prev.map(rec => {
+      if (rec.id === recordId || (podNumber && rec.podNumber === podNumber)) {
+        const nextDeliveryStatus = (rec.deliveryStatus === 'Delivered' || rec.deliveryStatus === 'In Transit' || rec.deliveryStatus === 'Out for Delivery')
+          ? rec.deliveryStatus
+          : 'Assigned';
+
+        return {
+          ...rec,
+          driverName,
+          assignedDriver: driverName,
+          assignedDriverId: finalDriverId,
+          helperName: helperName || rec.helperName,
+          assignedHelper: helperName || rec.assignedHelper,
+          assignedHelperId: finalHelperId,
+          assignmentStatus: 'Assigned',
+          assignmentDate: nowIso,
+          plateNumber: plate,
+          courier: vehicle,
+          truckProvider: vehicle,
+          deliveryStatus: nextDeliveryStatus,
+          driverProgressStatus: rec.driverProgressStatus || 'Assigned',
+        };
+      }
+      return rec;
+    }));
+
+    // 3. Update Dispatches
+    setDispatches(prev => prev.map(disp => {
+      if (disp.id === recordId || (podNumber && disp.podNumber === podNumber)) {
+        return {
+          ...disp,
+          driverName,
+          assignedDriver: driverName,
+          assignedDriverId: finalDriverId,
+          helperName: helperName || disp.helperName,
+          assignedHelper: helperName || disp.assignedHelper,
+          assignedHelperId: finalHelperId,
+          assignmentStatus: 'Assigned',
+          assignmentDate: nowIso,
+          plateNumber: plate,
+          truckProvider: vehicle,
+          driverProgressStatus: disp.driverProgressStatus || 'Assigned',
+        };
+      }
+      return disp;
+    }));
+
+    // 4. Update Shipments
+    setShipments(prev => prev.map(ship => {
+      if (ship.id === recordId || (podNumber && ship.podNumber === podNumber)) {
+        return {
+          ...ship,
+          driverName,
+          assignedDriver: driverName,
+          assignedDriverId: finalDriverId,
+          helperName: helperName || ship.helperName,
+          assignedHelper: helperName || ship.assignedHelper,
+          assignedHelperId: finalHelperId,
+          assignmentStatus: 'Assigned',
+          assignmentDate: nowIso,
+          plateNumber: plate,
+          truckPlate: plate,
+          driverProgressStatus: ship.driverProgressStatus || 'Assigned',
+        };
+      }
+      return ship;
+    }));
+
+    // 5. Automatically create a real DriverAssignmentNotification (no duplicates)
+    const newNotif: DriverAssignmentNotification = {
+      id: `DAN-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      driverName,
+      driverId: finalDriverId,
+      assignedDriverId: finalDriverId,
+      assignedHelperId: finalHelperId,
+      helperName: helperName || undefined,
+      assignedHelper: helperName || undefined,
+      recordId: targetForwarding?.id || targetDispatch?.id || recordId,
+      podNumber,
+      referenceNumber: refNum,
+      client,
+      consignee,
+      area,
+      destination: destination || area,
+      deliveryDate,
+      dispatchTime,
+      vehicle,
+      plateNumber: plate,
+      quantity,
+      unit,
+      title: 'New Delivery Assigned',
+      message: `New Delivery Assigned — Client: ${client} | Area: ${area} | Destination: ${destination || area} | Consignee: ${consignee} | Delivery Date: ${deliveryDate} | Vehicle: ${vehicle} (${plate}) | Helper: ${helperName || 'None assigned'}.`,
+      createdAt: nowIso,
+      isRead: false,
+    };
+
+    setDriverNotifications(prev => {
+      // Prevent duplicate notification for exact same recordId & driver
+      const existing = prev.filter(n => !(n.recordId === (targetForwarding?.id || targetDispatch?.id || recordId) && n.driverName === driverName));
+      const updated = [newNotif, ...existing];
+      try {
+        localStorage.setItem('ofii_cache_v4_driver_notifications', JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
+      return updated;
+    });
+
+    broadcastDataChange('DRIVER_ASSIGNED', { recordId, driverName, driverId: finalDriverId, plateNumber: plate, podNumber });
+    showSuccessToast('Driver Assigned Successfully', `${driverName} (${finalDriverId}) assigned to ${podNumber}. Driver notification sent.`);
+  };
+
+  const markDriverNotificationAsRead = async (id: string): Promise<void> => {
+    setDriverNotifications(prev => {
+      const updated = prev.map(n => n.id === id ? { ...n, isRead: true, readAt: new Date().toISOString() } : n);
+      try {
+        localStorage.setItem('ofii_cache_v4_driver_notifications', JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
+      return updated;
+    });
+  };
+
+  const markAllDriverNotificationsAsRead = async (driverName?: string): Promise<void> => {
+    setDriverNotifications(prev => {
+      const updated = prev.map(n => (!driverName || n.driverName === driverName) ? { ...n, isRead: true, readAt: new Date().toISOString() } : n);
+      try {
+        localStorage.setItem('ofii_cache_v4_driver_notifications', JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
+      return updated;
+    });
+    showSuccessToast('Driver notifications marked as read.');
+  };
+
+  const updateDriverProgress = async (
+    recordId: string,
+    currentLocation: string,
+    progressStatus: 'Assigned' | 'In Transit' | 'Out for Delivery' | 'Delivered'
+  ): Promise<void> => {
+    // Guard: Do not allow reverting from Delivered back to earlier statuses
+    const target = forwardingRecords.find((r) => r.id === recordId || r.podNumber === recordId);
+    if (target && (target.deliveryStatus === 'Delivered' || target.driverProgressStatus === 'Delivered') && progressStatus !== 'Delivered') {
+      console.warn('Cannot revert a Delivered delivery back to an earlier status.');
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    let targetPodNumber = '';
+
+    // 1. Update Forwarding Records
+    setForwardingRecords((prev) =>
+      prev.map((rec) => {
+        if (rec.id === recordId || (rec.podNumber && rec.podNumber === recordId)) {
+          if ((rec.deliveryStatus === 'Delivered' || rec.driverProgressStatus === 'Delivered') && progressStatus !== 'Delivered') {
+            return rec;
+          }
+          targetPodNumber = rec.podNumber;
+          return {
+            ...rec,
+            currentLocation: currentLocation.trim(),
+            driverProgressStatus: progressStatus,
+            progressUpdatedAt: timestamp,
+            deliveryStatus: progressStatus === 'Delivered'
+              ? 'Delivered'
+              : (progressStatus === 'Out for Delivery' || progressStatus === 'In Transit' ? 'In Transit' : rec.deliveryStatus),
+          };
+        }
+        return rec;
+      })
+    );
+
+    // 2. Update Dispatches
+    setDispatches((prev) =>
+      prev.map((disp) => {
+        if (disp.id === recordId || (targetPodNumber && disp.podNumber === targetPodNumber) || disp.podNumber === recordId) {
+          if (disp.status === 'Delivered' && progressStatus !== 'Delivered') {
+            return disp;
+          }
+          return {
+            ...disp,
+            currentLocation: currentLocation.trim(),
+            driverProgressStatus: progressStatus,
+            progressUpdatedAt: timestamp,
+            status: progressStatus === 'Delivered'
+              ? 'Delivered'
+              : (progressStatus === 'Out for Delivery' || progressStatus === 'In Transit' ? 'In Transit' : disp.status),
+          };
+        }
+        return disp;
+      })
+    );
+
+    // 3. Update Shipments
+    setShipments((prev) =>
+      prev.map((ship) => {
+        if (ship.id === recordId || (targetPodNumber && ship.podNumber === targetPodNumber) || ship.podNumber === recordId) {
+          if (ship.status === 'Delivered' && progressStatus !== 'Delivered') {
+            return ship;
+          }
+          return {
+            ...ship,
+            currentLocation: currentLocation.trim(),
+            driverProgressStatus: progressStatus,
+            progressUpdatedAt: timestamp,
+            status: progressStatus === 'Delivered'
+              ? 'Delivered'
+              : (progressStatus === 'Out for Delivery' || progressStatus === 'In Transit' ? progressStatus : ship.status),
+          };
+        }
+        return ship;
+      })
+    );
+
+    broadcastDataChange('DRIVER_PROGRESS_UPDATED', { recordId, currentLocation, progressStatus, timestamp });
+    showSuccessToast('Progress Updated', `Location: ${currentLocation} • Status: ${progressStatus}`);
+  };
+
+  const markDeliveryAsDelivered = async (params: {
+    recordId: string;
+    receiverName: string;
+    dateReceived: string;
+    signature?: string;
+    remarks?: string;
+  }): Promise<void> => {
+    const { recordId, receiverName, dateReceived, signature, remarks } = params;
+    const nowIso = new Date().toISOString();
+    const actualDeliveryDate = dateReceived || nowIso.split('T')[0];
+
+    // Find the matching delivery record
+    const targetForwarding = forwardingRecords.find((r) => r.id === recordId || r.podNumber === recordId);
+    const targetDispatch = dispatches.find((d) => d.id === recordId || d.podNumber === recordId);
+    const targetShipment = shipments.find((s) => s.id === recordId || s.podNumber === recordId);
+
+    const clientName = targetForwarding?.client || targetDispatch?.clientName || targetShipment?.client || 'General Client';
+    const consignee = targetForwarding?.consignee || targetDispatch?.consignee || targetShipment?.consignee || 'Consignee Facility';
+    const driverName = targetForwarding?.driverName || targetForwarding?.assignedDriver || targetDispatch?.driverName || targetDispatch?.assignedDriver || targetShipment?.driverName || targetShipment?.assignedDriver || 'Assigned Driver';
+    const area = targetForwarding?.area || (targetShipment?.area as any) || 'Luzon';
+    const podNumber = targetForwarding?.podNumber || targetDispatch?.podNumber || targetShipment?.podNumber || `POD-${recordId.slice(-6)}`;
+    const refNum = targetForwarding?.referenceNumber || targetDispatch?.manifestNumber || targetShipment?.manifestNumber || '';
+    const dispatchDate = targetForwarding?.actualDispatchDate || targetDispatch?.deliveryDate || targetShipment?.pickupDate || '2026-08-25';
+    const vehicle = targetForwarding?.vehicle || targetDispatch?.vehicle || 'Delivery Truck';
+    const plateNumber = targetForwarding?.plateNumber || targetDispatch?.plateNumber || '—';
+
+    // Calculate TAT and Delivery Performance using centralized lead time & working days calculation
+    const leadTime = targetForwarding?.deliveryLeadTimeDays || getAutoDeliveryLeadTime(clientName, targetForwarding?.modeOfShipment || 'Land Freight', area);
+    const perfResult = computeDeliveryPerformance(dispatchDate, actualDeliveryDate, leadTime);
+
+    // Calculate POD return due date and automatic POD status (DO NOT set dateOfPodReturn yet - POD document is pending return to office)
+    const podDueRes = calculatePodReturnDueDate(actualDeliveryDate, clientName, area);
+    const autoPod = determineAutomaticPodStatus({
+      actualDeliveryDate: actualDeliveryDate,
+      podReturnDueDate: podDueRes.podReturnDueDate,
+      actualPodReturnDate: '',
+      clientName,
+      deliveryArea: area,
+    });
+
+    // 1. Update Forwarding Records (Single Source of Truth)
+    setForwardingRecords((prev) =>
+      prev.map((rec) => {
+        if (rec.id === recordId || rec.podNumber === podNumber) {
+          return {
+            ...rec,
+            deliveryStatus: 'Delivered',
+            driverProgressStatus: 'Delivered',
+            actualDeliveryDate,
+            deliveryDate: actualDeliveryDate,
+            receiversName: receiverName.trim(),
+            dateReceived,
+            receiverSignature: signature,
+            currentLocation: 'Delivered to Consignee',
+            progressUpdatedAt: nowIso,
+            deliveryLeadTimeDays: leadTime,
+            deliveryTatDays: perfResult.tatDays,
+            deliveryPerformance: perfResult.performance,
+            podReturnDueDate: podDueRes.podReturnDueDate || rec.podReturnDueDate,
+            podReturnDueDateFormatted: podDueRes.podReturnDueDateFormatted || rec.podReturnDueDateFormatted,
+            podLeadTimeDays: podDueRes.podLeadTimeDays,
+            podStatus: autoPod.status,
+            remarks: remarks || rec.remarks,
+            deliveryRemarks: remarks || rec.deliveryRemarks,
+          };
+        }
+        return rec;
+      })
+    );
+
+    // 2. Update Dispatches
+    setDispatches((prev) =>
+      prev.map((disp) => {
+        if (disp.id === recordId || disp.podNumber === podNumber) {
+          return {
+            ...disp,
+            status: 'Delivered',
+            driverProgressStatus: 'Delivered',
+            receiversName: receiverName.trim(),
+            dateReceived,
+            receiverSignature: signature,
+            currentLocation: 'Delivered to Consignee',
+            progressUpdatedAt: nowIso,
+            remarks: remarks || disp.remarks,
+          };
+        }
+        return disp;
+      })
+    );
+
+    // 3. Update Shipments
+    setShipments((prev) =>
+      prev.map((ship) => {
+        if (ship.id === recordId || ship.podNumber === podNumber) {
+          return {
+            ...ship,
+            status: 'Delivered',
+            driverProgressStatus: 'Delivered',
+            deliveryDate: actualDeliveryDate,
+            actualDeliveryDate,
+            receiversName: receiverName.trim(),
+            dateReceived,
+            receiverSignature: signature,
+            currentLocation: 'Delivered to Consignee',
+            progressUpdatedAt: nowIso,
+            podReturnDueDate: podDueRes.podReturnDueDate || ship.podReturnDueDate,
+            podReturnDueDateFormatted: podDueRes.podReturnDueDateFormatted || ship.podReturnDueDateFormatted,
+            podStatus: autoPod.status,
+          };
+        }
+        return ship;
+      })
+    );
+
+    // 4. Create Office / Encoder Notification: DELIVERY COMPLETED
+    const coordinator = targetForwarding?.coordinator || 'Alodia Manalansan';
+    const completionNotif: PODNotification = {
+      id: `NOTIF-COMP-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      dedupKey: `${recordId}_DELIVERY_COMPLETED_${Date.now()}`,
+      type: 'DELIVERY_COMPLETED',
+      title: 'Delivery Marked as Delivered',
+      message: `Delivery for ${clientName} / ${consignee} has been marked as Delivered by ${driverName}.`,
+      recordId: targetForwarding?.id || recordId,
+      client: clientName,
+      coordinator,
+      referenceNumber: refNum,
+      podNumber,
+      consignee,
+      destination: targetForwarding?.destinationCode || `${area} - ${consignee}`,
+      area,
+      deliveryArea: area,
+      actualDeliveryDate,
+      podReturnDueDate: podDueRes.podReturnDueDate,
+      podReturnDueDateFormatted: podDueRes.podReturnDueDateFormatted,
+      podSla: 'PENDING',
+      podStatus: autoPod.status,
+      createdAt: nowIso,
+      isRead: false,
+      driverName,
+      receiverName: receiverName.trim(),
+      dateReceived,
+      vehicle,
+      plateNumber,
+    };
+
+    setPodNotifications((prev) => {
+      // Prevent duplicate notification if clicked or triggered multiple times
+      const alreadyExists = prev.some(
+        (n) => n.type === 'DELIVERY_COMPLETED' && (n.recordId === recordId || (n.podNumber && n.podNumber === podNumber))
+      );
+      if (alreadyExists) return prev;
+      const updated = [completionNotif, ...prev];
+      try {
+        localStorage.setItem('ofii_cache_v4_pod_notifications', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    broadcastDataChange('DELIVERY_COMPLETED', {
+      recordId,
+      podNumber,
+      client: clientName,
+      consignee,
+      driverName,
+      actualDeliveryDate,
+      receiverName,
+      dateReceived,
+      vehicle,
+      plateNumber,
+      area,
+    });
+
+    showSuccessToast(
+      'Delivery Completed Successfully!',
+      `POD ${podNumber} marked as Delivered. Office / Encoder notified.`
+    );
+  };
+
+  /**
+   * Phase 1: Create a separate Delivery Assignment record linked to an existing Original Delivery.
+   * - Does NOT modify or replace the original Delivery.
+   * - Validates that no active assignment already exists for the same Original Delivery ID.
+   * - Generates a unique Assignment ID.
+   * - Persists as a separate record.
+   */
+  const createDeliveryAssignment = useCallback(async (assignmentData: {
+    originalDeliveryId: string;
+    driver: string;
+    driverId?: string;
+    helper: string;
+    helperId?: string;
+    vehicle: string;
+    plateNumber: string;
+    assignmentDate?: string;
+    assignmentTime?: string;
+    assignmentStatus?: string;
+    assignmentId?: string;
+  }): Promise<DeliveryAssignment> => {
+    if (!assignmentData.originalDeliveryId || !assignmentData.originalDeliveryId.trim()) {
+      throw new Error('Original Delivery ID is required.');
+    }
+
+    const cleanDeliveryId = assignmentData.originalDeliveryId.trim();
+
+    // Safety: Prevent duplicate active assignment for the same delivery if an active assignment already exists
+    const existingActive = deliveryAssignments.find(
+      (a) => a.originalDeliveryId.toLowerCase() === cleanDeliveryId.toLowerCase() && 
+             a.assignmentStatus === 'ASSIGNED'
+    );
+    if (existingActive) {
+      throw new Error('This delivery already has an active assignment.');
+    }
+
+    // Generate unique Assignment ID
+    const nextSeq = deliveryAssignments.length + 1;
+    const generatedId = assignmentData.assignmentId?.trim() || `ASG-${String(nextSeq).padStart(4, '0')}`;
+
+    const now = new Date();
+    const dateStr = assignmentData.assignmentDate?.trim() || now.toISOString().split('T')[0];
+    const timeStr = assignmentData.assignmentTime?.trim() || now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+    const newAssignment: DeliveryAssignment = {
+      id: generatedId,
+      assignmentId: generatedId,
+      originalDeliveryId: cleanDeliveryId,
+      driver: assignmentData.driver.trim(),
+      driverId: assignmentData.driverId?.trim(),
+      helper: assignmentData.helper.trim(),
+      helperId: assignmentData.helperId?.trim(),
+      vehicle: assignmentData.vehicle.trim(),
+      plateNumber: assignmentData.plateNumber.trim(),
+      assignmentDate: dateStr,
+      assignmentTime: timeStr,
+      assignmentStatus: 'ASSIGNED',
+      createdAt: now.toISOString(),
+      createdBy: 'Driver Head',
+    };
+
+    // Save assignment as a separate record
+    // Do NOT create another original Delivery.
+    // Do NOT duplicate the shipment/delivery in Forwarding.
+    // Do NOT modify unrelated records.
+    setDeliveryAssignments((prev) => {
+      const updated = [newAssignment, ...prev];
+      try {
+        localStorage.setItem('ofii_delivery_assignments_v1', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to persist delivery assignments:', e);
+      }
+      return updated;
+    });
+
+    showSuccessToast(
+      `Delivery Assignment ${newAssignment.assignmentId} Created`,
+      `Linked to Original Delivery ${newAssignment.originalDeliveryId}`
+    );
+
+    return newAssignment;
+  }, [deliveryAssignments, showSuccessToast]);
+
+  const getDeliveryAssignmentByOriginalDeliveryId = useCallback((originalDeliveryId: string) => {
+    if (!originalDeliveryId) return undefined;
+    const cleanId = originalDeliveryId.trim().toLowerCase();
+    return deliveryAssignments.find(
+      (a) => a.originalDeliveryId.toLowerCase() === cleanId && 
+             a.assignmentStatus === 'ASSIGNED'
+    );
+  }, [deliveryAssignments]);
+
   const refreshData = async (showMessage = true) => {
     await fetchAllData(true);
     if (showMessage) {
@@ -1136,10 +1967,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dashboardSummary,
         syncStatus,
         importHistory,
+        currentUserProfile,
+        driverNotifications,
+        deliveryAssignments,
         isLoading,
         loadingMessage,
         errorMessage,
         toastMessage,
+        setCurrentUserProfile,
+        createDeliveryAssignment,
+        getDeliveryAssignmentByOriginalDeliveryId,
+        assignDriverToDelivery,
+        markDriverNotificationAsRead,
+        markAllDriverNotificationsAsRead,
         addClient,
         updateClient,
         toggleClientStatus,
@@ -1158,6 +1998,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         completeNotification,
         markPodNotificationAsRead,
         markAllPodNotificationsAsRead,
+        updateDriverProgress,
+        markDeliveryAsDelivered,
         refreshData,
         dismissToast,
         showSuccessToast,

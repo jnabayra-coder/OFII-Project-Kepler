@@ -667,15 +667,21 @@ export function validateImportRows(
   const existingPods = new Set<string>();
   const existingAwbs = new Set<string>();
 
-  existingForwardingRecords.forEach((r) => {
-    if (r.referenceNumber) existingRefs.add(String(r.referenceNumber).trim().toLowerCase());
-    if (r.podNumber) existingPods.add(String(r.podNumber).trim().toLowerCase());
-    if (r.awbCourierRefNumber) existingAwbs.add(String(r.awbCourierRefNumber).trim().toLowerCase());
-  });
-
-  existingDispatches.forEach((d) => {
-    if (d.podNumber) existingPods.add(String(d.podNumber).trim().toLowerCase());
-  });
+  if (targetModule === 'dispatch') {
+    // For dispatch import: duplicate check only applies against existing dispatch runs,
+    // NOT forwarding records (as dispatches operationalize existing forwarding shipments)
+    existingDispatches.forEach((d) => {
+      if (d.podNumber) existingPods.add(String(d.podNumber).trim().toLowerCase());
+      if (d.manifestNumber) existingRefs.add(String(d.manifestNumber).trim().toLowerCase());
+    });
+  } else {
+    // For forwarding import: check against existing forwarding master records
+    existingForwardingRecords.forEach((r) => {
+      if (r.referenceNumber) existingRefs.add(String(r.referenceNumber).trim().toLowerCase());
+      if (r.podNumber) existingPods.add(String(r.podNumber).trim().toLowerCase());
+      if (r.awbCourierRefNumber) existingAwbs.add(String(r.awbCourierRefNumber).trim().toLowerCase());
+    });
+  }
 
   // Track batch internal duplicates
   const batchRefs = new Map<string, number>();

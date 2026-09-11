@@ -38,6 +38,9 @@ interface ClientDetailViewProps {
   onDeactivateClient: (client: ClientSummary) => void;
   onReactivateClient: (client: ClientSummary) => void;
   onSelectShipment: (shipment: ShipmentRecord) => void;
+  onDeleteClient?: (client: ClientSummary) => void;
+  onSelectDispatch?: (dispatch: DispatchRecord) => void;
+  onSelectForwardingRecord?: (record: ForwardingProgressiveRecord) => void;
 }
 
 export const ClientDetailView: React.FC<ClientDetailViewProps> = ({
@@ -50,6 +53,9 @@ export const ClientDetailView: React.FC<ClientDetailViewProps> = ({
   onDeactivateClient,
   onReactivateClient,
   onSelectShipment,
+  onDeleteClient,
+  onSelectDispatch,
+  onSelectForwardingRecord,
 }) => {
   // Aggregate all shipments/dispatches/forwardings belonging to this client
   const clientShipments = useMemo(() => {
@@ -81,9 +87,49 @@ export const ClientDetailView: React.FC<ClientDetailViewProps> = ({
     );
   }, [client, forwardingRecords]);
 
-  // Unified Shipment History Rows for the table
+  // Unified Shipment History Rows for the table - Single Source of Truth: Forwarding Records
   const unifiedHistory = useMemo(() => {
-    // Use direct shipments list, or construct from dispatches if none exist
+    // 1. Master Forwarding Records (Single Source of Truth)
+    if (clientForwarding.length > 0) {
+      return clientForwarding.map(f => {
+        const syntheticShipment: ShipmentRecord = {
+          id: f.id,
+          client: f.client,
+          clientId: f.clientId,
+          monthStarted: f.month || 'August',
+          bookedDate: f.actualDispatchDate,
+          pickupDate: f.actualDispatchDate,
+          deliveryDate: f.actualDeliveryDate || f.plannedDeliveryDate,
+          consignee: f.consignee,
+          modeOfShipment: f.modeOfShipment,
+          destination: `${f.destinationCode || ''} - ${f.consignee}`,
+          quantityBoxes: f.quantity,
+          actualWeightKg: f.actualWeightKg,
+          status: f.deliveryStatus === 'Delivered' ? 'Delivered' : (f.deliveryStatus === 'Delayed' ? 'Delayed' : (f.deliveryStatus === 'In Transit' ? 'In Transit' : 'Booked')),
+          area: f.area,
+          podNumber: f.podNumber,
+          plateNumber: f.plateNumber,
+          manifestNumber: f.referenceNumber,
+          awbNumber: f.referenceNumber,
+          datePodReceived: f.dateOfPodReturn,
+          podStatus: f.podStatus,
+          isDeleted: false,
+        };
+        return {
+          id: f.id,
+          dispatchDate: f.actualDispatchDate || '2026-08-24',
+          consignee: f.consignee || 'Authorized Consignee',
+          destination: `${f.destinationCode || ''} - ${f.consignee}`,
+          podNumber: f.podNumber || f.referenceNumber || f.id,
+          quantity: `${f.quantity} ${f.unit || 'Boxes'}`,
+          deliveryDate: f.actualDeliveryDate || f.plannedDeliveryDate || 'In Transit',
+          status: (f.deliveryStatus === 'Delivered' ? 'Delivered' : (f.deliveryStatus === 'Delayed' ? 'Delayed' : (f.deliveryStatus === 'In Transit' ? 'In Transit' : 'Booked'))) as ShipmentStatus,
+          rawShipment: syntheticShipment,
+        };
+      });
+    }
+
+    // 2. Direct shipments list
     if (clientShipments.length > 0) {
       return clientShipments.map(s => ({
         id: s.id,

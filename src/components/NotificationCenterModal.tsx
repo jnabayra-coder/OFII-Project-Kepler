@@ -97,6 +97,13 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
             Returned On Time
           </span>
         );
+      case 'DELIVERY_COMPLETED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-300">
+            <CheckCircle2 className="w-3 h-3 text-blue-600" />
+            Delivery Completed
+          </span>
+        );
     }
   };
 
@@ -231,6 +238,17 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
             >
               🟢 On Time
             </button>
+            <button
+              onClick={() => setFilterType('DELIVERY_COMPLETED')}
+              className={`px-3 py-1 rounded-full font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                filterType === 'DELIVERY_COMPLETED'
+                  ? 'bg-teal-700 text-white'
+                  : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+              }`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              <span>Delivered ({podNotifications.filter((n) => n.type === 'DELIVERY_COMPLETED').length})</span>
+            </button>
           </div>
 
           {/* Quick Search */}
@@ -318,24 +336,31 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                     </div>
 
                     <div>
-                      <span className="text-slate-400 block font-normal">Project Ref / POD:</span>
-                      <span className="font-mono font-medium text-slate-900 block truncate">
-                        {notif.referenceNumber || '—'} {notif.podNumber ? `• ${notif.podNumber}` : ''}
+                      <span className="text-slate-400 block font-normal">Consignee & Area:</span>
+                      <span className="font-semibold text-slate-900 block truncate">
+                        {notif.consignee || '—'} {notif.area ? `(${notif.area})` : ''}
                       </span>
                     </div>
 
                     <div>
-                      <span className="text-slate-400 block font-normal">Assigned Coordinator:</span>
+                      <span className="text-slate-400 block font-normal">
+                        {notif.type === 'DELIVERY_COMPLETED' ? 'Assigned Driver:' : 'Assigned Coordinator:'}
+                      </span>
                       <span className="inline-flex items-center gap-1 font-semibold text-blue-900 truncate">
                         <User className="w-3 h-3 text-blue-600 shrink-0" />
-                        {notif.coordinator || 'Unassigned'}
+                        {notif.type === 'DELIVERY_COMPLETED' && notif.driverName ? notif.driverName : (notif.coordinator || 'Unassigned')}
                       </span>
                     </div>
 
                     <div>
-                      <span className="text-slate-400 block font-normal">POD Due Date:</span>
-                      <span className="font-medium text-slate-900 block">
-                        {notif.podReturnDueDateFormatted || notif.podReturnDueDate || '—'}
+                      <span className="text-slate-400 block font-normal">
+                        {notif.type === 'DELIVERY_COMPLETED' ? 'Receiver & Date:' : 'POD Due Date:'}
+                      </span>
+                      <span className="font-medium text-slate-900 block truncate">
+                        {notif.type === 'DELIVERY_COMPLETED' 
+                          ? `${notif.receiverName || 'Received'} • ${notif.dateReceived || notif.actualDeliveryDate || '—'}`
+                          : (notif.podReturnDueDateFormatted || notif.podReturnDueDate || '—')
+                        }
                       </span>
                     </div>
                   </div>
@@ -344,6 +369,9 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
                     <div className="flex items-center gap-3 flex-wrap">
                       <span>Delivered: <strong>{notif.actualDeliveryDate || '—'}</strong></span>
+                      {notif.vehicle && (
+                        <span>Vehicle: <strong className="text-slate-800 font-mono">{notif.vehicle} ({notif.plateNumber || '—'})</strong></span>
+                      )}
                       {notif.actualPodReturnDate && (
                         <span>Returned: <strong>{notif.actualPodReturnDate}</strong></span>
                       )}

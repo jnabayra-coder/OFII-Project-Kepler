@@ -33,6 +33,7 @@ interface ClientShipmentDetailViewProps {
   onBack: () => void;
   onUpdateShipment?: (updatedShipment: ShipmentRecord) => void;
   onRequestDelete?: (shipment: ShipmentRecord) => void;
+  onRequestDeleteShipment?: (shipment: ShipmentRecord) => void;
 }
 
 export const ClientShipmentDetailView: React.FC<ClientShipmentDetailViewProps> = ({
@@ -40,7 +41,9 @@ export const ClientShipmentDetailView: React.FC<ClientShipmentDetailViewProps> =
   onBack,
   onUpdateShipment,
   onRequestDelete,
+  onRequestDeleteShipment,
 }) => {
+  const handleDeleteAction = onRequestDeleteShipment || onRequestDelete;
   const [isEditMode, setIsEditMode] = useState(false);
   const [draftShipment, setDraftShipment] = useState<ShipmentRecord>({ ...shipment });
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -203,10 +206,10 @@ export const ClientShipmentDetailView: React.FC<ClientShipmentDetailViewProps> =
           <div className="flex items-center gap-2">
             {!isEditMode ? (
               <>
-                {onRequestDelete && (
+                {handleDeleteAction && (
                   <button
                     type="button"
-                    onClick={() => onRequestDelete(shipment)}
+                    onClick={() => handleDeleteAction(shipment)}
                     className="inline-flex items-center gap-1 px-3 py-2 rounded text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300 transition-colors cursor-pointer"
                     title="Move this shipment record to Recently Deleted"
                   >

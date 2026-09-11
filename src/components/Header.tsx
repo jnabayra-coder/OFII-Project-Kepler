@@ -11,10 +11,13 @@ import {
   Database,
   RefreshCw,
   Wifi,
-  WifiOff
+  WifiOff,
+  Truck,
+  UserCheck
 } from 'lucide-react';
 import { NavigationTab } from '../types';
 import { useData } from '../context/DataContext';
+import { OFII_DRIVERS_ROSTER } from '../data/mockData';
 
 interface HeaderProps {
   currentTab: NavigationTab;
@@ -32,7 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectHub,
   onOpenNotifications,
 }) => {
-  const { syncStatus, refreshData, isLoading, podNotifications } = useData();
+  const { syncStatus, refreshData, isLoading, podNotifications, currentUserProfile, setCurrentUserProfile } = useData();
 
   const unreadCount = podNotifications.filter((n) => !n.isRead).length;
 
@@ -147,6 +150,45 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="hidden sm:flex items-center text-xs text-slate-600 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded">
           <Clock className="w-3.5 h-3.5 text-slate-500 mr-1.5" />
           <span>Today: <strong className="text-slate-800">Aug 25, 2026</strong></span>
+        </div>
+
+        {/* Role & Perspective Badge / Switcher */}
+        <div className="hidden xl:flex items-center gap-2 bg-slate-100 border border-slate-200 rounded px-2.5 py-1 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span className="font-semibold text-slate-800 truncate max-w-[120px]">{currentUserProfile?.name || 'Encoder'}</span>
+            <span className="text-[10px] px-1.5 py-0.2 bg-blue-100 text-blue-800 font-semibold rounded uppercase">
+              {currentUserProfile?.userRole === 'driver' ? 'Driver' : 'Encoder / Office'}
+            </span>
+          </div>
+          {currentUserProfile?.userRole === 'encoder' && (
+            <button
+              onClick={() => {
+                const driver = OFII_DRIVERS_ROSTER[0];
+                setCurrentUserProfile({
+                  id: driver.id,
+                  username: driver.name.toLowerCase().replace(/\s+/g, '.'),
+                  name: driver.name,
+                  role: 'Delivery Driver',
+                  userRole: 'driver',
+                  department: 'Fleet Operations',
+                  email: `${driver.name.toLowerCase().replace(/[^a-z]/g, '')}@ofii.com.ph`,
+                  employeeId: driver.id,
+                  hubLocation: 'OFII Central Hub (Paranaque)',
+                  driverName: driver.name,
+                  driverId: driver.id,
+                  assignedVehicle: driver.vehicleType,
+                  vehiclePlate: driver.defaultPlate,
+                  contactNumber: driver.contactNumber,
+                });
+              }}
+              className="text-[10px] font-bold text-blue-700 hover:text-blue-900 bg-white hover:bg-blue-50 px-2 py-0.5 rounded border border-slate-300 cursor-pointer transition-colors shadow-2xs inline-flex items-center gap-1"
+              title="Test Driver Perspective directly"
+            >
+              <Truck className="w-3 h-3 text-blue-600" />
+              <span>Driver View →</span>
+            </button>
+          )}
         </div>
 
         {/* Notification Bell 🔔 */}

@@ -22,7 +22,8 @@ import {
   ArrowUpDown,
   ExternalLink,
   Edit3,
-  Trash2
+  Trash2,
+  UserCheck
 } from 'lucide-react';
 import { 
   ForwardingProgressiveRecord, 
@@ -51,6 +52,7 @@ interface ForwardingProgressiveViewProps {
   onQuickEditRecord?: (record: ForwardingProgressiveRecord) => void;
   onEditRecord?: (record: ForwardingProgressiveRecord) => void;
   onRequestDeleteRecord?: (record: ForwardingProgressiveRecord) => void;
+  onAssignDriver?: (record: ForwardingProgressiveRecord) => void;
 }
 
 export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps> = ({
@@ -62,6 +64,7 @@ export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps>
   onQuickEditRecord,
   onEditRecord,
   onRequestDeleteRecord,
+  onAssignDriver,
 }) => {
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -308,13 +311,30 @@ export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps>
   };
 
   const getDeliveryStatusBadge = (status: ForwardingDeliveryStatus, autoStatus?: AutomaticDeliveryStatusResult) => {
+    // If delivery has occurred, prioritize showing DELIVERED with performance indicator
+    if (status === 'Delivered' || autoStatus?.isDelivered) {
+      const isLate = autoStatus?.isLate;
+      return (
+        <span 
+          className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold border shadow-2xs ${
+            isLate 
+              ? 'bg-rose-50 text-rose-800 border-rose-300' 
+              : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+          }`}
+          title={autoStatus?.activeTargetDate ? `Delivered ${isLate ? 'Late past' : 'On Time on/before'} target ${autoStatus.activeTargetDate}` : 'Delivered'}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isLate ? 'bg-rose-600' : 'bg-emerald-600'}`}></span>
+          {isLate ? 'Delivered (Late)' : 'Delivered'}
+        </span>
+      );
+    }
+
     switch (status) {
       case 'On Time':
-      case 'Delivered':
         return (
           <span 
             className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-2xs"
-            title={autoStatus?.activeTargetDate ? `Delivered On Time on/before target ${autoStatus.activeTargetDate} (${autoStatus.isRddOverride ? 'RDD Target' : 'Leadtime Target'})` : 'Delivered On Time'}
+            title={autoStatus?.activeTargetDate ? `On Time on/before target ${autoStatus.activeTargetDate}` : 'On Time'}
           >
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 mr-1.5"></span>
             On Time
@@ -848,9 +868,40 @@ export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps>
                         {r.referenceNumber}
                       </td>
 
-                      {/* Courier */}
-                      <td className="py-2.5 px-3 text-slate-700 truncate max-w-[140px]" title={r.courier}>
-                        {r.courier}
+                      {/* Courier / Assigned Driver */}
+                      <td className="py-2.5 px-3">
+                        <div className="flex flex-col gap-1 max-w-[150px]">
+                          <span className="text-slate-800 text-xs font-semibold truncate" title={r.courier}>
+                            {r.courier || 'OFII Logistics'}
+                          </span>
+                          {r.driverName || r.assignedDriver ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onAssignDriver) onAssignDriver(r);
+                              }}
+                              className="text-[10px] text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 px-1.5 py-0.5 rounded border border-blue-200 font-semibold truncate text-left flex items-center gap-1 cursor-pointer"
+                              title="Click to reassign driver"
+                            >
+                              <UserCheck className="w-3 h-3 shrink-0 text-blue-600" />
+                              <span className="truncate">{r.driverName || r.assignedDriver}</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onAssignDriver) onAssignDriver(r);
+                              }}
+                              className="text-[10px] text-slate-500 hover:text-blue-700 hover:bg-slate-100 px-1.5 py-0.5 rounded border border-dashed border-slate-300 text-left flex items-center gap-1 cursor-pointer"
+                              title="Assign a driver to this delivery"
+                            >
+                              <UserCheck className="w-3 h-3 shrink-0" />
+                              <span>+ Assign Driver</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
 
                       {/* POD Number */}
@@ -886,8 +937,26 @@ export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps>
                       </td>
 
                       {/* Delivery Date */}
-                      <td className="py-2.5 px-3 font-mono text-slate-700">
-                        {r.actualDeliveryDate || <span className="text-slate-400 italic">In Transit</span>}
+                      <td className="py-2.5 px-3">
+                        {r.actualDeliveryDate ? (
+                          <div className="flex flex-col">
+                            <span className="font-mono font-bold text-emerald-900 text-xs">
+                              {r.actualDeliveryDate}
+                            </span>
+                            {r.receiversName ? (
+                              <span 
+                                className="text-[10px] text-slate-600 truncate max-w-[140px] mt-0.5" 
+                                title={`Received by: ${r.receiversName}${r.dateReceived ? ` on ${r.dateReceived}` : ''}`}
+                              >
+                                Recv: <strong className="text-slate-800 font-semibold">{r.receiversName}</strong>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">No receiver listed</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic text-xs">In Transit</span>
+                        )}
                       </td>
 
                       {/* POD Status */}
@@ -936,6 +1005,20 @@ export const ForwardingProgressiveView: React.FC<ForwardingProgressiveViewProps>
                               className="p-1 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded border border-transparent hover:border-amber-200 transition-colors cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {onAssignDriver && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onAssignDriver(r);
+                              }}
+                              title="Assign Delivery Driver"
+                              className="px-2 py-1 rounded bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1 shadow-2xs"
+                            >
+                              <UserCheck className="w-3 h-3" />
+                              <span>Driver</span>
                             </button>
                           )}
                           <button

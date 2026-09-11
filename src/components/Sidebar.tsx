@@ -10,10 +10,12 @@ import {
   Settings, 
   LogOut, 
   ChevronRight,
-  ShieldCheck
+  ShieldCheck,
+  Briefcase,
+  UserCheck
 } from 'lucide-react';
 import { NavigationTab } from '../types';
-import { currentUser } from '../data/mockData';
+import { useData } from '../context/DataContext';
 
 interface SidebarProps {
   currentTab: NavigationTab;
@@ -32,50 +34,87 @@ export const Sidebar: React.FC<SidebarProps> = ({
   deletedCount = 0,
   pendingNotificationsCount = 0,
 }) => {
-  const navItems = [
+  const { currentUserProfile } = useData();
+  const role = currentUserProfile?.userRole || 'office_head';
+
+  const allNavItems = [
+    // 1. Office Head Executive Dashboard
     {
       id: 'dashboard' as NavigationTab,
-      label: 'Dashboard',
+      label: 'Executive Dashboard',
       icon: LayoutDashboard,
       badge: null,
       description: 'Daily overview & KPIs',
+      roles: ['office_head', 'encoder'],
     },
+    // 2. Coordinator Dedicated Portal
+    {
+      id: 'coordinator_portal' as NavigationTab,
+      label: 'Coordinator Portal',
+      icon: Briefcase,
+      badge: currentUserProfile?.assignedClients?.length ? `${currentUserProfile.assignedClients.length} Accounts` : 'Assigned',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40',
+      description: 'Assigned accounts and telemetry',
+      roles: ['coordinator', 'office_head'],
+    },
+    // 3. Driver Head Dedicated Portal
+    {
+      id: 'driver_head_portal' as NavigationTab,
+      label: 'Fleet & Driver Assignment',
+      icon: UserCheck,
+      badge: 'Head',
+      badgeColor: 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40',
+      description: 'Driver and helper assignment management',
+      roles: ['driver_head', 'office_head'],
+    },
+    // 4. Daily Dispatching Monitoring
     {
       id: 'dispatch' as NavigationTab,
-      label: 'Daily Dispatching Monitoring',
+      label: role === 'coordinator' ? 'Assigned Dispatches' : 'Daily Dispatching Monitoring',
       icon: Truck,
       badge: pendingNotificationsCount > 0 ? `🔔 ${pendingNotificationsCount} New` : (unreadDispatchesCount > 0 ? `${unreadDispatchesCount}` : null),
       badgeColor: pendingNotificationsCount > 0 ? 'bg-amber-400 text-slate-950 font-bold border border-amber-300' : undefined,
       description: 'Fleet, loading & departures',
+      roles: ['office_head', 'coordinator', 'encoder', 'driver_head'],
     },
+    // 5. Client Management
     {
       id: 'client_management' as NavigationTab,
       label: 'Client Management',
       icon: Users,
       badge: null,
       description: 'Directory & corporate profiles',
+      roles: ['office_head', 'encoder'],
     },
+    // 6. Client Shipment Monitoring
     {
       id: 'clients' as NavigationTab,
-      label: 'Client Shipment Monitoring',
+      label: role === 'coordinator' ? 'Assigned Client Shipments' : 'Client Shipment Monitoring',
       icon: Building2,
       badge: null,
       description: 'By client & reference numbers',
+      roles: ['office_head', 'coordinator', 'encoder'],
     },
+    // 7. Forwarding Progressive Report
     {
       id: 'forwarding_report' as NavigationTab,
-      label: 'Forwarding Progressive Report',
+      label: role === 'encoder' ? 'Forwarding Progressive Entry' : (role === 'coordinator' ? 'Assigned Forwarding Report' : 'Forwarding Progressive Report'),
       icon: FileSpreadsheet,
-      badge: 'Active',
+      badge: role === 'encoder' ? 'Data Entry' : 'Active',
+      badgeColor: role === 'encoder' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40' : undefined,
       description: 'Tracking, TAT & POD status',
+      roles: ['office_head', 'coordinator', 'encoder', 'driver_head'],
     },
+    // 8. Reports
     {
       id: 'reports' as NavigationTab,
-      label: 'Reports',
+      label: 'Reports & Analytics',
       icon: BarChart3,
       badge: null,
       description: 'SLA & performance analytics',
+      roles: ['office_head'],
     },
+    // 9. Trash & Operational Recovery
     {
       id: 'trash' as NavigationTab,
       label: 'Recently Deleted',
@@ -83,15 +122,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: deletedCount > 0 ? `${deletedCount}` : null,
       badgeColor: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
       description: 'Trash & operational recovery',
+      roles: ['office_head', 'encoder'],
     },
+    // 10. Settings
     {
       id: 'settings' as NavigationTab,
       label: 'Settings',
       icon: Settings,
       badge: null,
       description: 'Profile & preferences',
+      roles: ['office_head', 'coordinator', 'encoder', 'driver_head'],
     },
   ];
+
+  const navItems = allNavItems.filter(item => item.roles.includes(role));
 
   return (
     <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 select-none min-h-screen">
@@ -182,15 +226,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center space-x-2.5 min-w-0">
             <div className="w-8 h-8 rounded-full bg-blue-900 border border-blue-600/50 flex items-center justify-center text-blue-200 text-xs font-bold shrink-0">
-              JD
+              {currentUserProfile?.name ? currentUserProfile.name.split(' ').map(n => n[0]).slice(0, 2).join('') : 'OF'}
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-white truncate leading-tight">
-                {currentUser.name}
+                {currentUserProfile?.name || 'Office Operator'}
               </p>
-              <p className="text-[11px] text-slate-400 truncate leading-tight">
-                {currentUser.role}
-              </p>
+              <div className="flex items-center gap-1 mt-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <p className="text-[10px] text-slate-300 font-medium truncate leading-tight">
+                  {currentUserProfile?.userRole === 'office_head' && 'Office Head'}
+                  {currentUserProfile?.userRole === 'coordinator' && 'Account Coordinator'}
+                  {currentUserProfile?.userRole === 'encoder' && 'Logistics Encoder'}
+                  {currentUserProfile?.userRole === 'driver_head' && 'Driver Head / Fleet'}
+                  {currentUserProfile?.userRole === 'driver' && 'OFII Driver'}
+                </p>
+              </div>
             </div>
           </div>
 

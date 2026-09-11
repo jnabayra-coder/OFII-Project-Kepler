@@ -32,7 +32,8 @@ import {
   Check,
   Search,
   RotateCcw,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Boxes
 } from 'lucide-react';
 import { 
   DispatchRecord, 
@@ -45,7 +46,7 @@ import {
 } from '../types';
 import { currentUser } from '../data/mockData';
 import { downloadDailyDispatchTemplate, downloadForwardingTemplate } from '../utils/excelParser';
-import { calculateDaysBetween, getAutoDeliveryLeadTime, determineAutomaticDeliveryStatus } from '../utils/forwardingCalculations';
+import { calculateDaysBetween, getAutoDeliveryLeadTime, determineAutomaticDeliveryStatus, getSystemTodayDateStr } from '../utils/forwardingCalculations';
 
 export type DashboardPeriodFilter = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM';
 
@@ -96,17 +97,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (!dateStr || dateStr.trim() === '') return false;
 
     const cleanDate = dateStr.slice(0, 10);
-    // Operational reference dates in prototype (August 2026 active cycle)
-    const todayRef = '2026-08-25';
+    const systemToday = getSystemTodayDateStr();
     const nowIso = new Date().toISOString().slice(0, 10);
+    // Reference operational anchor for August 2026 dataset
+    const todayRef = '2026-08-25';
 
     if (selectedPeriod === 'TODAY') {
-      return cleanDate === todayRef || cleanDate === '2026-08-27' || cleanDate === '2026-08-24' || cleanDate === nowIso;
+      return cleanDate === systemToday || cleanDate === todayRef || cleanDate === nowIso;
     }
 
     if (selectedPeriod === 'WEEK') {
       const weekStart = '2026-08-18';
-      const weekEnd = '2026-08-31';
+      const weekEnd = '2026-08-25';
       const rollingStart = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
       return (cleanDate >= weekStart && cleanDate <= weekEnd) || (cleanDate >= rollingStart && cleanDate <= nowIso);
     }
@@ -144,7 +146,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const activeDispatches = useMemo(() => dispatches.filter(d => !d.isDeleted), [dispatches]);
   const activeShipments = useMemo(() => shipments.filter(s => !s.isDeleted), [shipments]);
   const activeForwarding = useMemo(() => forwardingRecords.filter(f => !f.isDeleted), [forwardingRecords]);
-  const activeClients = useMemo(() => clients.filter(c => !c.isDeleted), [clients]);
+  const activeClients = useMemo(() => clients.filter(c => !c.isDeleted && !c.isDeactivated), [clients]);
   const activeDispatchNotifications = useMemo(
     () => dispatchNotifications.filter(n => !n.isDismissed && n.status !== 'COMPLETED'),
     [dispatchNotifications]
@@ -160,14 +162,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       // Client filter
       if (!isRecordForSelectedClient(f.client, f.clientId)) return false;
       // Date filter
-      const primaryDate = f.actualDispatchDate || f.actualDeliveryDate || f.plannedDeliveryDate || f.createdAt;
+      const primaryDate = f.actualDispatchDate || f.actualDeliveryDate || f.plannedDeliveryDate;
       return isDateInPeriod(primaryDate);
     });
   }, [activeForwarding, selectedPeriod, selectedClientFilter, customStartDate, customEndDate]);
 
   const periodFilteredShipments = useMemo(() => {
     return activeShipments.filter(s => {
-      if (!isRecordForSelectedClient(s.clientName || s.client, s.clientId)) return false;
+      if (!isRecordForSelectedClient(s.client)) return false;
       const primaryDate = s.actualDeparture || s.bookedDate || s.actualDeliveryDate || s.deliveryDate;
       return isDateInPeriod(primaryDate);
     });
@@ -175,8 +177,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const periodFilteredDispatches = useMemo(() => {
     return activeDispatches.filter(d => {
-      if (!isRecordForSelectedClient(d.clientName, d.clientId)) return false;
-      const primaryDate = d.deliveryDate || d.plannedDeliveryDate || d.actualDeparture || d.createdAt;
+      if (!isRecordForSelectedClient(d.clientName)) return false;
+      const primaryDate = d.deliveryDate || d.plannedDeliveryDate || d.actualDepartureTime;
       return isDateInPeriod(primaryDate);
     });
   }, [activeDispatches, selectedPeriod, selectedClientFilter, customStartDate, customEndDate]);
@@ -187,7 +189,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [periodFilteredForwarding, periodFilteredShipments]);
 
   // ---------------------------------------------------------------------------
-  // 3. DISPATCHING SUMMARY METRICS (Section 2)
+  // 3. DISPATCHING SUMMARY METRICS (Section 2 - Operational Dispatch Activity)
   // ---------------------------------------------------------------------------
   const dispatchMetrics = useMemo(() => {
     const total = periodFilteredDispatches.length;
@@ -197,15 +199,47 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     let pendingPickup = 0;
     let delayed = 0;
     let todayCount = 0;
+    let trucksArrived = 0;
+    let currentlyLoading = 0;
+    let completedLoading = 0;
+    let departedTrucks = 0;
+    let pendingOperations = 0;
 
+    const systemToday = getSystemTodayDateStr();
     const todayRef = '2026-08-25';
     const nowIso = new Date().toISOString().slice(0, 10);
 
     periodFilteredDispatches.forEach(d => {
       // Dispatches Today check
-      const dDate = (d.deliveryDate || d.plannedDeliveryDate || d.actualDeparture || '').slice(0, 10);
-      if (dDate === todayRef || dDate === '2026-08-27' || dDate === '2026-08-24' || dDate === nowIso) {
+      const dDate = (d.deliveryDate || d.plannedDeliveryDate || d.actualDepartureTime || '').slice(0, 10);
+      if (dDate === systemToday || dDate === todayRef || dDate === nowIso) {
         todayCount++;
+      }
+
+      // Trucks Arrived: arrival time logged or arrived status
+      const hasArrival = !!(d.timeArrived || d.truckArrivalTime || d.status === 'Arrived at Hub' || d.status === 'In Loading' || d.status === 'Departed' || d.status === 'In Transit' || d.status === 'Delivered');
+      if (hasArrival) {
+        trucksArrived++;
+      }
+
+      // Currently Loading: status is In Loading or startLoading logged without departure
+      if (d.status === 'In Loading' || (d.startLoadingTime && !d.departureTime && !d.actualDepartureTime && d.status !== 'Departed' && d.status !== 'Delivered' && d.status !== 'In Transit')) {
+        currentlyLoading++;
+      }
+
+      // Completed Loading: endLoadingTime logged or status progressed past loading
+      if (d.endLoadingTime || d.loadingEndTime || d.status === 'Departed' || d.status === 'In Transit' || d.status === 'Delivered') {
+        completedLoading++;
+      }
+
+      // Departed Trucks: departure time logged or departed/in transit/delivered status
+      if (d.actualDepartureTime || d.departureTime || d.status === 'Departed' || d.status === 'In Transit' || d.status === 'Delivered') {
+        departedTrucks++;
+      }
+
+      // Pending Dispatch Operations: awaiting loading or awaiting departure
+      if (d.status === 'Pending Pickup' || d.status === 'In Loading' || (!d.departureTime && !d.actualDepartureTime && d.status !== 'Departed' && d.status !== 'Delivered')) {
+        pendingOperations++;
       }
 
       // Status breakdown
@@ -223,7 +257,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     });
 
     const pendingTotal = inLoading + pendingPickup;
-    const completionRate = total > 0 ? ((completedDeparted / total) * 100).toFixed(1) : null;
+    const completionRate = total > 0 ? ((departedTrucks / total) * 100).toFixed(1) : null;
 
     return {
       total,
@@ -235,6 +269,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       pendingTotal,
       delayed,
       completionRate,
+      trucksArrived,
+      currentlyLoading,
+      completedLoading,
+      departedTrucks,
+      pendingOperations,
     };
   }, [periodFilteredDispatches]);
 
@@ -269,19 +308,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         });
 
         // Status Categorisation
-        if (auto.status === 'On Time' || record.deliveryStatus === 'Delivered') {
+        if (record.deliveryStatus === 'Delivered' || auto.status === 'On Time' || Boolean(record.actualDeliveryDate)) {
           delivered++;
-        } else if (auto.status === 'In Transit' || record.deliveryStatus === 'In Transit') {
+        } else if (record.deliveryStatus === 'In Transit' || auto.status === 'In Transit') {
           inTransit++;
-        } else if (auto.status === 'Delayed' || record.deliveryStatus === 'Delayed') {
+        } else if (record.deliveryStatus === 'Delayed' || auto.status === 'Delayed') {
           delayed++;
         } else {
           pending++;
         }
 
         // Delivery Performance Evaluation for completed deliveries
-        if (auto.isDelivered || record.actualDeliveryDate || record.deliveryStatus === 'Delivered') {
-          if (record.deliveryPerformance === 'HIT' || record.deliveryPerformance === 'On-Time' || (!auto.isLate && record.deliveryPerformance !== 'MISSED')) {
+        if (Boolean(record.actualDeliveryDate) || record.deliveryStatus === 'Delivered' || auto.isDelivered) {
+          if (record.deliveryPerformance === 'HIT') {
+            onTimeCount++;
+          } else if (record.deliveryPerformance === 'MISSED') {
+            delayedOutcomeCount++;
+          } else if (!auto.isLate) {
             onTimeCount++;
           } else {
             delayedOutcomeCount++;
@@ -295,25 +338,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         }
 
         const auto = determineAutomaticDeliveryStatus({
-          actualDispatchDate: shipment.actualDispatchDate || shipment.deliveryDate,
+          actualDispatchDate: shipment.actualDeparture || shipment.deliveryDate,
           actualDeliveryDate: shipment.actualDeliveryDate,
           expectedDeliveryDate: shipment.expectedDeliveryDate,
           requestDeliveryDate: shipment.requestDeliveryDate,
-          leadTimeDaysOrConfig: shipment.deliveryLeadTimeDays,
+          leadTimeDaysOrConfig: shipment.podLeadTimeDays || 3,
         });
 
-        if (auto.status === 'On Time' || shipment.status === 'Delivered') {
+        if (shipment.status === 'Delivered' || auto.status === 'On Time' || Boolean(shipment.actualDeliveryDate)) {
           delivered++;
-        } else if (auto.status === 'In Transit' || shipment.status === 'In Transit') {
+        } else if (shipment.status === 'In Transit' || auto.status === 'In Transit') {
           inTransit++;
-        } else if (auto.status === 'Delayed' || shipment.status === 'Delayed') {
+        } else if (shipment.status === 'Delayed' || auto.status === 'Delayed') {
           delayed++;
         } else {
           pending++;
         }
 
-        if (auto.isDelivered || shipment.actualDeliveryDate || shipment.status === 'Delivered') {
-          if (shipment.deliveryPerformance === 'HIT' || shipment.deliveryPerformance === 'On-Time' || (!auto.isLate && shipment.deliveryPerformance !== 'MISSED')) {
+        if (Boolean(shipment.actualDeliveryDate) || shipment.status === 'Delivered' || auto.isDelivered) {
+          if (shipment.deliveryPerformance === 'On-Time' || shipment.deliveryPerformance === 'Within SLA') {
+            onTimeCount++;
+          } else if (shipment.deliveryPerformance === 'Delayed') {
+            delayedOutcomeCount++;
+          } else if (!auto.isLate) {
             onTimeCount++;
           } else {
             delayedOutcomeCount++;
@@ -329,9 +376,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       : null;
 
     const baseTotal = totalDeliveries > 0 ? totalDeliveries : 1;
-    const deliveredPct = Math.round((delivered / baseTotal) * 100);
-    const inTransitPct = Math.round((inTransit / baseTotal) * 100);
-    const pendingPct = Math.round((pending / baseTotal) * 100);
+    const deliveredPct = totalDeliveries > 0 ? Math.round((delivered / baseTotal) * 100) : 0;
+    const inTransitPct = totalDeliveries > 0 ? Math.round((inTransit / baseTotal) * 100) : 0;
+    const pendingPct = totalDeliveries > 0 ? Math.round((pending / baseTotal) * 100) : 0;
     const delayedPct = totalDeliveries > 0 ? Math.max(0, 100 - (deliveredPct + inTransitPct + pendingPct)) : 0;
 
     return {
@@ -361,14 +408,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     let podHitCount = 0;
     let podMissedCount = 0;
     let podReturned = 0;
+    let podDelayed = 0;
 
     if (periodFilteredForwarding.length > 0) {
       periodFilteredForwarding.forEach(record => {
-        const isReturned = record.dateOfPodReturn && record.dateOfPodReturn.trim() !== '' || 
+        const isReturned = Boolean(record.dateOfPodReturn && record.dateOfPodReturn.trim() !== '') || 
                            record.podStatus === 'Returned' || 
-                           record.podStatus === 'Transmitted' || 
-                           record.podStatus === 'POD On Time' || 
-                           (record.podPerformance === 'HIT' || record.podPerformance === 'MISSED');
+                           record.podStatus === 'Transmitted';
 
         if (isReturned) {
           podReturned++;
@@ -376,6 +422,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             podHitCount++;
           } else if (record.podPerformance === 'MISSED' || record.podStatus === 'POD Delayed') {
             podMissedCount++;
+            podDelayed++;
           } else if (record.actualDeliveryDate && record.dateOfPodReturn) {
             // Turnaround check against POD lead time
             const tat = calculateDaysBetween(record.actualDeliveryDate, record.dateOfPodReturn);
@@ -384,33 +431,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               podHitCount++;
             } else {
               podMissedCount++;
+              podDelayed++;
             }
           } else {
             podHitCount++;
           }
         } else {
           podPending++;
-          // Check if pending but already past due
+          // Check if pending but already past due (overdue)
           if (record.podStatus === 'POD Delayed' || record.podPerformance === 'MISSED') {
-            // Unreturned overdue count
+            podDelayed++;
           }
         }
       });
     } else {
       periodFilteredShipments.forEach(shipment => {
-        const isReturned = shipment.datePodReceived && shipment.datePodReceived.trim() !== '' ||
-                           shipment.podStatus === 'Returned' ||
-                           (shipment.podPerformance === 'HIT' || shipment.podPerformance === 'MISSED');
+        const isReturned = Boolean(shipment.datePodReceived && shipment.datePodReceived.trim() !== '');
 
         if (isReturned) {
           podReturned++;
-          if (shipment.podPerformance === 'HIT' || shipment.podPerformance === 'On-Time' || shipment.podStatus === 'Returned') {
-            podHitCount++;
+          if (shipment.actualDeliveryDate && shipment.datePodReceived) {
+            const tat = calculateDaysBetween(shipment.actualDeliveryDate, shipment.datePodReceived);
+            const lead = shipment.podLeadTimeDays || 3;
+            if (tat <= lead) {
+              podHitCount++;
+            } else {
+              podMissedCount++;
+              podDelayed++;
+            }
           } else {
-            podMissedCount++;
+            podHitCount++;
           }
         } else {
           podPending++;
+          if (shipment.status === 'Delayed') {
+            podDelayed++;
+          }
         }
       });
     }
@@ -421,14 +477,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       ? ((podHitCount / totalCompletedPod) * 100).toFixed(1)
       : null;
 
-    const totalPodPool = podReturned + podPending || 1;
-    const returnFulfillmentPct = Math.round((podReturned / totalPodPool) * 100);
+    const totalPodPool = podReturned + podPending;
+    const returnFulfillmentPct = totalPodPool > 0 ? Math.round((podReturned / totalPodPool) * 100) : 0;
 
     return {
       podPending,
       podHitCount,
       podMissedCount,
       podReturned,
+      podDelayed,
       totalCompletedPod,
       podPerformancePercentage,
       returnFulfillmentPct,
@@ -464,21 +521,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       matchingShipments.forEach((r: any) => {
         // Delivery status
-        const isDelivered = r.deliveryStatus === 'Delivered' || r.status === 'Delivered' || r.actualDeliveryDate;
+        const isDelivered = r.deliveryStatus === 'Delivered' || r.status === 'Delivered' || Boolean(r.actualDeliveryDate);
         if (isDelivered) {
           totalDeliveries++;
           if (r.deliveryPerformance === 'HIT' || r.deliveryPerformance === 'On-Time') {
             onTimeDeliveries++;
-          } else if (r.deliveryPerformance === 'MISSED' || r.deliveryPerformance === 'Delayed') {
-            delayedDeliveries++;
           } else {
-            onTimeDeliveries++;
+            delayedDeliveries++;
           }
+        } else if (r.deliveryStatus === 'Delayed' || r.status === 'Delayed' || r.deliveryPerformance === 'MISSED') {
+          delayedDeliveries++;
         }
 
         // POD status
-        const hasPod = r.dateOfPodReturn || r.datePodReceived || r.podStatus === 'Returned' || r.podStatus === 'Transmitted';
-        if (!hasPod) {
+        const isPodReturned = Boolean(r.dateOfPodReturn && r.dateOfPodReturn.trim() !== '') || 
+                              Boolean(r.datePodReceived && r.datePodReceived.trim() !== '') || 
+                              r.podStatus === 'Returned' || 
+                              r.podStatus === 'Transmitted';
+        if (!isPodReturned) {
           podPending++;
           if (r.podStatus === 'POD Delayed' || r.podPerformance === 'MISSED') {
             podDelayed++;
@@ -1024,20 +1084,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {/* Step 1: Dispatched */}
+          {/* Step 1: Master Shipment Registered */}
           <div 
-            onClick={() => onNavigate('dispatch')}
+            onClick={() => onNavigate('forwarding_report')}
             className="p-3 rounded-lg bg-blue-50/60 border border-blue-100 hover:border-blue-300 transition-all cursor-pointer group"
           >
             <div className="flex items-center justify-between text-[11px] font-bold text-blue-800 uppercase">
-              <span>1. Dispatched</span>
-              <Truck className="w-3.5 h-3.5 text-blue-600" />
+              <span>1. Master Shipment</span>
+              <Package className="w-3.5 h-3.5 text-blue-600" />
             </div>
             <div className="mt-2 text-xl font-bold font-mono text-blue-900">
-              {dispatchMetrics.total}
+              {deliveryMetrics.totalDeliveries}
             </div>
             <div className="mt-1 text-[10px] text-blue-700">
-              {dispatchMetrics.todayCount} scheduled today
+              Forwarding master records
             </div>
           </div>
 
@@ -1116,192 +1176,361 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* --------------------------------------------------------------------- */}
-      {/* 4. CORE SUMMARY CARDS (7 Dynamic Operational Cards) */}
+      {/* 4. SHIPMENT PERFORMANCE (Source: Forwarding Progressive Report)       */}
       {/* --------------------------------------------------------------------- */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3.5">
-        
-        {/* Card 1: TOTAL SHIPMENTS */}
-        <div 
-          id="summary-card-total-shipments"
-          onClick={() => onNavigate('clients')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to view all shipments in Client Monitoring"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-blue-700 transition-colors">
-              Total Shipments
-            </span>
-            <div className="p-1.5 rounded bg-slate-100 text-slate-700 group-hover:bg-blue-50 group-hover:text-blue-700 transition-colors">
-              <Package className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-slate-900 font-mono">
-              {deliveryMetrics.totalDeliveries}
+      <div className="space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 px-1">
+          <div className="flex items-center gap-2">
+            <Package className="w-4 h-4 text-blue-700" />
+            <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Shipment Performance
+            </h2>
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+              Source: Forwarding Progressive Report • Master Shipment Records
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-slate-500 font-medium truncate flex items-center justify-between">
-            <span>Shared dataset</span>
-            <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-blue-600 transition-colors" />
-          </div>
+          <span className="text-[11px] text-slate-500 font-medium">
+            Single Source of Truth for System-Wide Shipments
+          </span>
         </div>
 
-        {/* Card 2: TOTAL DISPATCHES */}
-        <div 
-          id="summary-card-total-dispatches"
-          onClick={() => onNavigate('dispatch')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to open Daily Dispatching Monitoring"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-blue-700 transition-colors">
-              Total Dispatches
-            </span>
-            <div className="p-1.5 rounded bg-blue-50 text-blue-700 group-hover:bg-blue-100 transition-colors">
-              <Truck className="w-3.5 h-3.5" />
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+          {/* Card 1: TOTAL SHIPMENTS */}
+          <div 
+            id="shipment-card-total"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Master Shipments in Forwarding Report"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-blue-700 transition-colors">
+                Total Shipments
+              </span>
+              <div className="p-1.5 rounded bg-blue-50 text-blue-700 group-hover:bg-blue-100 transition-colors">
+                <Package className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-slate-900 font-mono">
+                {deliveryMetrics.totalDeliveries}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-blue-700 font-medium truncate flex items-center justify-between">
+              <span>Master shipment records</span>
+              <ChevronRight className="w-3 h-3 text-blue-400 group-hover:text-blue-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-blue-700 font-mono">
-              {dispatchMetrics.total}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-blue-600 font-medium truncate flex items-center justify-between">
-            <span>{dispatchMetrics.todayCount} today</span>
-            <ChevronRight className="w-3 h-3 text-blue-400 group-hover:text-blue-700 transition-colors" />
-          </div>
-        </div>
 
-        {/* Card 3: DELIVERED */}
-        <div 
-          id="summary-card-delivered"
-          onClick={() => onNavigate('forwarding_report')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to view Delivered records in Forwarding Report"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-emerald-700 transition-colors">
-              Delivered
-            </span>
-            <div className="p-1.5 rounded bg-emerald-50 text-emerald-700 group-hover:bg-emerald-100 transition-colors">
-              <CheckCircle2 className="w-3.5 h-3.5" />
+          {/* Card 2: DELIVERED */}
+          <div 
+            id="shipment-card-delivered"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Delivered records"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-emerald-700 transition-colors">
+                Delivered
+              </span>
+              <div className="p-1.5 rounded bg-emerald-50 text-emerald-700 group-hover:bg-emerald-100 transition-colors">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-emerald-700 font-mono">
+                {deliveryMetrics.delivered}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-emerald-700 font-medium truncate flex items-center justify-between">
+              <span>{deliveryMetrics.totalDeliveries > 0 ? `${deliveryMetrics.deliveredPct}% completed` : '—'}</span>
+              <ChevronRight className="w-3 h-3 text-emerald-400 group-hover:text-emerald-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-emerald-700 font-mono">
-              {deliveryMetrics.delivered}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-emerald-700 font-medium truncate flex items-center justify-between">
-            <span>{deliveryMetrics.totalDeliveries > 0 ? `${deliveryMetrics.deliveredPct}% completed` : '—'}</span>
-            <ChevronRight className="w-3 h-3 text-emerald-400 group-hover:text-emerald-700 transition-colors" />
-          </div>
-        </div>
 
-        {/* Card 4: IN TRANSIT */}
-        <div 
-          id="summary-card-in-transit"
-          onClick={() => onNavigate('forwarding_report')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-cyan-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to view In-Transit shipments"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-cyan-700 transition-colors">
-              In Transit
-            </span>
-            <div className="p-1.5 rounded bg-cyan-50 text-cyan-700 group-hover:bg-cyan-100 transition-colors">
-              <Activity className="w-3.5 h-3.5" />
+          {/* Card 3: IN TRANSIT */}
+          <div 
+            id="shipment-card-in-transit"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-cyan-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view In-Transit shipments"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-cyan-700 transition-colors">
+                In Transit
+              </span>
+              <div className="p-1.5 rounded bg-cyan-50 text-cyan-700 group-hover:bg-cyan-100 transition-colors">
+                <Activity className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-cyan-700 font-mono">
+                {deliveryMetrics.inTransit}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-cyan-700 font-medium truncate flex items-center justify-between">
+              <span>Linehaul freight en route</span>
+              <ChevronRight className="w-3 h-3 text-cyan-400 group-hover:text-cyan-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-cyan-700 font-mono">
-              {deliveryMetrics.inTransit}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-cyan-700 font-medium truncate flex items-center justify-between">
-            <span>En route linehaul</span>
-            <ChevronRight className="w-3 h-3 text-cyan-400 group-hover:text-cyan-700 transition-colors" />
-          </div>
-        </div>
 
-        {/* Card 5: PENDING */}
-        <div 
-          id="summary-card-pending"
-          onClick={() => onNavigate('forwarding_report')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-amber-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to view Pending consignments"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-amber-700 transition-colors">
-              Pending
-            </span>
-            <div className="p-1.5 rounded bg-amber-50 text-amber-700 group-hover:bg-amber-100 transition-colors">
-              <Clock className="w-3.5 h-3.5" />
+          {/* Card 4: DELAYED */}
+          <div 
+            id="shipment-card-delayed"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-rose-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to inspect Delayed shipments"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-rose-700 transition-colors">
+                Delayed
+              </span>
+              <div className="p-1.5 rounded bg-rose-50 text-rose-700 group-hover:bg-rose-100 transition-colors">
+                <AlertTriangle className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-rose-700 font-mono">
+                {deliveryMetrics.delayed}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-rose-700 font-medium truncate flex items-center justify-between">
+              <span>{deliveryMetrics.delayed > 0 ? 'Requires attention' : 'Zero delays'}</span>
+              <ChevronRight className="w-3 h-3 text-rose-400 group-hover:text-rose-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-amber-700 font-mono">
-              {deliveryMetrics.pending}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-amber-700 font-medium truncate flex items-center justify-between">
-            <span>Awaiting prep</span>
-            <ChevronRight className="w-3 h-3 text-amber-400 group-hover:text-amber-700 transition-colors" />
-          </div>
-        </div>
 
-        {/* Card 6: DELAYED DELIVERIES */}
-        <div 
-          id="summary-card-delayed"
-          onClick={() => onNavigate('forwarding_report')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-rose-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
-          title="Click to inspect Delayed shipments requiring attention"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-rose-700 transition-colors">
-              Delayed
-            </span>
-            <div className="p-1.5 rounded bg-rose-50 text-rose-700 group-hover:bg-rose-100 transition-colors">
-              <AlertTriangle className="w-3.5 h-3.5" />
+          {/* Card 5: DELIVERY PERFORMANCE (SLA %) */}
+          <div 
+            id="shipment-card-delivery-sla"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-indigo-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Delivery SLA breakdown"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-indigo-700 transition-colors">
+                Delivery SLA
+              </span>
+              <div className="p-1.5 rounded bg-indigo-50 text-indigo-700 group-hover:bg-indigo-100 transition-colors">
+                <TrendingUp className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-indigo-700 font-mono">
+                {deliveryMetrics.deliveryPerformancePercentage !== null 
+                  ? `${deliveryMetrics.deliveryPerformancePercentage}%` 
+                  : 'N/A'}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-indigo-700 font-medium truncate flex items-center justify-between">
+              <span>{deliveryMetrics.onTimeCount} Hit • {deliveryMetrics.delayedOutcomeCount} Missed</span>
+              <ChevronRight className="w-3 h-3 text-indigo-400 group-hover:text-indigo-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-rose-700 font-mono">
-              {deliveryMetrics.delayed}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-rose-700 font-medium truncate flex items-center justify-between">
-            <span>{deliveryMetrics.delayed > 0 ? 'Requires action' : 'Zero delays'}</span>
-            <ChevronRight className="w-3 h-3 text-rose-400 group-hover:text-rose-700 transition-colors" />
-          </div>
-        </div>
 
-        {/* Card 7: POD PENDING */}
-        <div 
-          id="summary-card-pod-pending"
-          onClick={() => onNavigate('forwarding_report')}
-          className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-purple-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group col-span-2 sm:col-span-1"
-          title="Click to track pending POD receipts"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-purple-700 transition-colors">
-              POD Pending
-            </span>
-            <div className="p-1.5 rounded bg-purple-50 text-purple-700 group-hover:bg-purple-100 transition-colors">
-              <FileCheck className="w-3.5 h-3.5" />
+          {/* Card 6: POD PERFORMANCE */}
+          <div 
+            id="shipment-card-pod-perf"
+            onClick={() => onNavigate('forwarding_report')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-purple-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to track POD performance and returns"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-purple-700 transition-colors">
+                POD Return SLA
+              </span>
+              <div className="p-1.5 rounded bg-purple-50 text-purple-700 group-hover:bg-purple-100 transition-colors">
+                <FileCheck className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-purple-700 font-mono">
+                {podMetrics.returnFulfillmentPct}%
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-purple-700 font-medium truncate flex items-center justify-between">
+              <span>{podMetrics.podPending} Pending • {podMetrics.podDelayed} Delayed</span>
+              <ChevronRight className="w-3 h-3 text-purple-400 group-hover:text-purple-700 transition-colors" />
             </div>
           </div>
-          <div className="mt-2.5">
-            <span className="text-2xl font-bold text-purple-700 font-mono">
-              {podMetrics.podPending}
+        </div>
+      </div>
+
+      {/* --------------------------------------------------------------------- */}
+      {/* 5. OPERATIONAL DISPATCH ACTIVITY (Source: Daily Dispatching Monitoring)*/}
+      {/* --------------------------------------------------------------------- */}
+      <div className="space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 px-1">
+          <div className="flex items-center gap-2">
+            <Truck className="w-4 h-4 text-blue-700" />
+            <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Operational Dispatch Activity
+            </h2>
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+              Source: Daily Dispatching Monitoring • Truck & Loading Bay Operations
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-purple-700 font-medium truncate flex items-center justify-between">
-            <span>Awaiting hardcopy</span>
-            <ChevronRight className="w-3 h-3 text-purple-400 group-hover:text-purple-700 transition-colors" />
-          </div>
+          <span className="text-[11px] text-slate-500 font-medium">
+            Fleet & Terminal Activity (Does NOT increase Total Shipments)
+          </span>
         </div>
 
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+          {/* Card 1: Dispatches Today */}
+          <div 
+            id="dispatch-card-today-operations"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Today's Dispatch Operations"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-blue-700 transition-colors">
+                Dispatches Today
+              </span>
+              <div className="p-1.5 rounded bg-blue-50 text-blue-700 group-hover:bg-blue-100 transition-colors">
+                <Truck className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-blue-700 font-mono">
+                {dispatchMetrics.todayCount}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-blue-600 font-medium truncate flex items-center justify-between">
+              <span>{dispatchMetrics.total} Total in Period</span>
+              <ChevronRight className="w-3 h-3 text-blue-400 group-hover:text-blue-700 transition-colors" />
+            </div>
+          </div>
+
+          {/* Card 2: Trucks Arrived */}
+          <div 
+            id="dispatch-card-trucks-arrived"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Trucks Arrived at Terminal"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-blue-700 transition-colors">
+                Trucks Arrived
+              </span>
+              <div className="p-1.5 rounded bg-sky-50 text-sky-700 group-hover:bg-sky-100 transition-colors">
+                <MapPin className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-sky-800 font-mono">
+                {dispatchMetrics.trucksArrived}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-sky-700 font-medium truncate flex items-center justify-between">
+              <span>At terminal dock</span>
+              <ChevronRight className="w-3 h-3 text-sky-400 group-hover:text-sky-700 transition-colors" />
+            </div>
+          </div>
+
+          {/* Card 3: Currently Loading */}
+          <div 
+            id="dispatch-card-currently-loading"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-amber-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Currently Loading dispatches"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-amber-700 transition-colors">
+                Currently Loading
+              </span>
+              <div className="p-1.5 rounded bg-amber-50 text-amber-700 group-hover:bg-amber-100 transition-colors">
+                <Boxes className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-amber-700 font-mono">
+                {dispatchMetrics.currentlyLoading}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-amber-700 font-medium truncate flex items-center justify-between">
+              <span>Active loading bay</span>
+              <ChevronRight className="w-3 h-3 text-amber-400 group-hover:text-amber-700 transition-colors" />
+            </div>
+          </div>
+
+          {/* Card 4: Completed Loading */}
+          <div 
+            id="dispatch-card-completed-loading"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-teal-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view dispatches with loading completed"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-teal-700 transition-colors">
+                Completed Loading
+              </span>
+              <div className="p-1.5 rounded bg-teal-50 text-teal-700 group-hover:bg-teal-100 transition-colors">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-teal-700 font-mono">
+                {dispatchMetrics.completedLoading}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-teal-700 font-medium truncate flex items-center justify-between">
+              <span>Staged for departure</span>
+              <ChevronRight className="w-3 h-3 text-teal-400 group-hover:text-teal-700 transition-colors" />
+            </div>
+          </div>
+
+          {/* Card 5: Departed Trucks */}
+          <div 
+            id="dispatch-card-departed-trucks"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-indigo-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Departed Trucks"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-indigo-700 transition-colors">
+                Departed Trucks
+              </span>
+              <div className="p-1.5 rounded bg-indigo-50 text-indigo-700 group-hover:bg-indigo-100 transition-colors">
+                <Truck className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-indigo-700 font-mono">
+                {dispatchMetrics.departedTrucks}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-indigo-700 font-medium truncate flex items-center justify-between">
+              <span>Linehaul dispatched</span>
+              <ChevronRight className="w-3 h-3 text-indigo-400 group-hover:text-indigo-700 transition-colors" />
+            </div>
+          </div>
+
+          {/* Card 6: Pending Operations */}
+          <div 
+            id="dispatch-card-pending-operations"
+            onClick={() => onNavigate('dispatch')}
+            className="bg-white p-4 rounded-lg border border-slate-200 shadow-xs hover:border-amber-400 hover:shadow-sm transition-all flex flex-col justify-between cursor-pointer group"
+            title="Click to view Pending Dispatch Operations"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-amber-700 transition-colors">
+                Pending Operations
+              </span>
+              <div className="p-1.5 rounded bg-amber-50 text-amber-700 group-hover:bg-amber-100 transition-colors">
+                <Clock className="w-3.5 h-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5">
+              <span className="text-2xl font-bold text-amber-700 font-mono">
+                {dispatchMetrics.pendingOperations}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-amber-700 font-medium truncate flex items-center justify-between">
+              <span>Awaiting staging / runs</span>
+              <ChevronRight className="w-3 h-3 text-amber-400 group-hover:text-amber-700 transition-colors" />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* --------------------------------------------------------------------- */}
@@ -1614,38 +1843,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Dispatch Breakdown Cards */}
             <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
               <div className="p-2.5 rounded bg-blue-50/70 border border-blue-100">
-                <div className="font-bold text-blue-800 font-mono text-base">{dispatchMetrics.total}</div>
-                <div className="text-[11px] text-blue-700 font-semibold mt-0.5">Total Dispatches</div>
+                <div className="font-bold text-blue-800 font-mono text-base">{dispatchMetrics.todayCount}</div>
+                <div className="text-[11px] text-blue-700 font-semibold mt-0.5">Dispatches Today</div>
               </div>
               <div className="p-2.5 rounded bg-emerald-50/70 border border-emerald-100">
-                <div className="font-bold text-emerald-800 font-mono text-base">{dispatchMetrics.completedDeparted}</div>
-                <div className="text-[11px] text-emerald-700 font-semibold mt-0.5">Departed/Done</div>
+                <div className="font-bold text-emerald-800 font-mono text-base">{dispatchMetrics.departedTrucks}</div>
+                <div className="text-[11px] text-emerald-700 font-semibold mt-0.5">Departed Trucks</div>
               </div>
               <div className="p-2.5 rounded bg-amber-50/70 border border-amber-100">
-                <div className="font-bold text-amber-800 font-mono text-base">{dispatchMetrics.pendingTotal}</div>
-                <div className="text-[11px] text-amber-700 font-semibold mt-0.5">Pending/Loading</div>
+                <div className="font-bold text-amber-800 font-mono text-base">{dispatchMetrics.pendingOperations}</div>
+                <div className="text-[11px] text-amber-700 font-semibold mt-0.5">Pending Ops</div>
               </div>
             </div>
 
             {/* Detailed Dispatch Metrics List */}
             <div className="mt-4 space-y-2 text-xs text-slate-600 pt-3 border-t border-slate-100">
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">Dispatches Today:</span>
-                <span className="font-bold text-blue-800 font-mono">{dispatchMetrics.todayCount} active runs</span>
+                <span className="text-slate-500">Trucks Arrived at Dock:</span>
+                <span className="font-bold text-sky-800 font-mono">{dispatchMetrics.trucksArrived} trucks</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">En Route / In Transit:</span>
-                <span className="font-bold text-cyan-800 font-mono">{dispatchMetrics.inTransit} runs</span>
+                <span className="text-slate-500">Currently Loading:</span>
+                <span className="font-bold text-amber-700 font-mono">{dispatchMetrics.currentlyLoading} bays</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">In Loading Bay:</span>
-                <span className="font-bold text-amber-700 font-mono">{dispatchMetrics.inLoading} staging</span>
+                <span className="text-slate-500">Completed Loading:</span>
+                <span className="font-bold text-teal-700 font-mono">{dispatchMetrics.completedLoading} staged</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">Dispatch Delays:</span>
-                <span className={`font-bold font-mono ${dispatchMetrics.delayed > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                  {dispatchMetrics.delayed} delayed
-                </span>
+                <span className="text-slate-500">Departed / On Route:</span>
+                <span className="font-bold text-indigo-700 font-mono">{dispatchMetrics.departedTrucks} trucks</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Pending Dispatch Operations:</span>
+                <span className="font-bold text-amber-800 font-mono">{dispatchMetrics.pendingOperations} runs</span>
               </div>
             </div>
           </div>

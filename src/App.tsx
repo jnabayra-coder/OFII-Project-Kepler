@@ -30,6 +30,13 @@ import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
 import { AddDispatchModal, DispatchPrefillData } from './components/AddDispatchModal';
 import { NotificationCenterModal } from './components/NotificationCenterModal';
+import { DriverDeliveryView } from './components/DriverDeliveryView';
+import { CoordinatorPortalView } from './components/CoordinatorPortalView';
+import { DriverHeadPortalView } from './components/DriverHeadPortalView';
+import { AccessDeniedView } from './components/AccessDeniedView';
+import { AssignDriverModal, DeliveryAssignTarget } from './components/AssignDriverModal';
+import { DEFAULT_ENCODER_USER } from './data/mockData';
+import { getAuthSession, clearAuthSession, isClientAssignedToUser } from './data/userAccounts';
 import { CheckCircle2, X, RefreshCw, AlertCircle } from 'lucide-react';
 import { useData } from './context/DataContext';
 
@@ -43,16 +50,26 @@ import {
   PhilippineArea, 
   ForwardingProgressiveRecord,
   OperationalRecordType,
-  ForwardingDispatchNotification
+  ForwardingDispatchNotification,
+  UserRole
 } from './types';
 
 export default function App() {
-  // 1. Auth State: Login Screen is shown first
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // 1. Auth State: Login Screen is shown first or restored from active session
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    const session = getAuthSession();
+    return Boolean(session && session.isActive);
+  });
   const [authView, setAuthView] = useState<'login' | 'create-account'>('login');
 
-  // 2. Navigation State
-  const [currentTab, setCurrentTab] = useState<NavigationTab>('dashboard');
+  // 2. Navigation State: Initial tab based on authenticated role
+  const [currentTab, setCurrentTab] = useState<NavigationTab>(() => {
+    const session = getAuthSession();
+    if (session?.userRole === 'coordinator') return 'coordinator_portal';
+    if (session?.userRole === 'driver_head') return 'driver_head_portal';
+    if (session?.userRole === 'encoder') return 'forwarding_report';
+    return 'dashboard';
+  });
   const [selectedHub, setSelectedHub] = useState('OFII Central Hub (Paranaque)');
 
   // 3. Centralized Database Context (Supabase Cloud + Cross-Tab Sync)
@@ -63,6 +80,9 @@ export default function App() {
     forwardingRecords,
     notifications: dispatchNotifications,
     podNotifications,
+    currentUserProfile,
+    setCurrentUserProfile,
+    assignDriverToDelivery,
     isLoading,
     loadingMessage,
     errorMessage,
@@ -93,6 +113,9 @@ export default function App() {
   } | null>(null);
 
   const [isPodNotificationModalOpen, setIsPodNotificationModalOpen] = useState(false);
+
+  // 4b. Driver Assignment Modal State
+  const [assignDriverTarget, setAssignDriverTarget] = useState<DeliveryAssignTarget | null>(null);
 
   // 5. Detailed View / Modal State
   const [selectedDispatch, setSelectedDispatch] = useState<DispatchRecord | null>(null);
@@ -152,13 +175,33 @@ export default function App() {
     return dispatchNotifications.filter(n => !n.isDismissed && (n.status === 'NEW' || n.status === 'IN PROGRESS')).length;
   }, [dispatchNotifications]);
 
+  // Sync active auth session on mount
+  React.useEffect(() => {
+    const session = getAuthSession();
+    if (session && session.isActive && currentUserProfile.employeeId !== session.employeeId) {
+      setCurrentUserProfile(session);
+    }
+  }, []);
+
+  const userRole = (currentUserProfile?.userRole || 'office_head') as UserRole;
+
   // Handlers
   const handleLogin = () => {
     setIsLoggedIn(true);
-    setCurrentTab('dashboard');
+    const session = getAuthSession() || currentUserProfile;
+    if (session?.userRole === 'coordinator') {
+      setCurrentTab('coordinator_portal');
+    } else if (session?.userRole === 'driver_head') {
+      setCurrentTab('driver_head_portal');
+    } else if (session?.userRole === 'encoder') {
+      setCurrentTab('forwarding_report');
+    } else {
+      setCurrentTab('dashboard');
+    }
   };
 
   const handleLogout = () => {
+    clearAuthSession();
     setIsLoggedIn(false);
     setAuthView('login');
     setSelectedDispatch(null);
@@ -166,6 +209,53 @@ export default function App() {
     setSelectedShipment(null);
     setSelectedManagementClient(null);
   };
+
+  // RBAC Permission Check for Navigation & Access Guarding
+  const isTabAuthorized = (role: UserRole, tab: NavigationTab): boolean => {
+    switch (role) {
+      case 'office_head':
+        return true; // Office Head has executive oversight across all operations
+      case 'coordinator':
+        return ['coordinator_portal', 'clients', 'forwarding_report', 'dispatch', 'settings'].includes(tab);
+      case 'encoder':
+        return ['forwarding_report', 'dispatch', 'client_management', 'clients', 'dashboard', 'trash', 'settings'].includes(tab);
+      case 'driver_head':
+        return ['driver_head_portal', 'dispatch', 'forwarding_report', 'settings'].includes(tab);
+      case 'driver':
+        return false;
+      default:
+        return false;
+    }
+  };
+
+  // Role-Scoped Collections (Coordinators are strictly restricted to assigned accounts)
+  const roleScopedClients = useMemo(() => {
+    if (userRole === 'coordinator') {
+      return clients.filter(c => isClientAssignedToUser(currentUserProfile, c.name));
+    }
+    return clients;
+  }, [clients, currentUserProfile, userRole]);
+
+  const roleScopedForwardingRecords = useMemo(() => {
+    if (userRole === 'coordinator') {
+      return forwardingRecords.filter(f => isClientAssignedToUser(currentUserProfile, f.client));
+    }
+    return forwardingRecords;
+  }, [forwardingRecords, currentUserProfile, userRole]);
+
+  const roleScopedDispatches = useMemo(() => {
+    if (userRole === 'coordinator') {
+      return dispatches.filter(d => isClientAssignedToUser(currentUserProfile, d.clientName));
+    }
+    return dispatches;
+  }, [dispatches, currentUserProfile, userRole]);
+
+  const roleScopedShipments = useMemo(() => {
+    if (userRole === 'coordinator') {
+      return shipments.filter(s => isClientAssignedToUser(currentUserProfile, s.client));
+    }
+    return shipments;
+  }, [shipments, currentUserProfile, userRole]);
 
   const handleNavigate = (tab: NavigationTab) => {
     setCurrentTab(tab);
@@ -563,6 +653,18 @@ export default function App() {
     );
   }
 
+  // 1b. Role-Based Routing: If logged in as a Driver, render the dedicated Driver Delivery Portal
+  if (currentUserProfile?.userRole === 'driver') {
+    return (
+      <DriverDeliveryView 
+        onLogout={handleLogout}
+        onSwitchToOffice={() => {
+          setCurrentUserProfile(DEFAULT_ENCODER_USER);
+        }}
+      />
+    );
+  }
+
   // Selected client name for header breadcrumb
   const currentClient = clients.find(c => c.id === selectedClientId);
 
@@ -618,168 +720,242 @@ export default function App() {
         <main className="flex-1 overflow-y-auto px-6 py-6 bg-slate-100/90">
           <div className="max-w-7xl mx-auto">
             
-            {/* TAB 1: DASHBOARD */}
-            {currentTab === 'dashboard' && (
-              <DashboardView
-                dispatches={dispatches}
-                shipments={shipments}
-                forwardingRecords={forwardingRecords}
-                clients={clients}
-                dispatchNotifications={dispatchNotifications}
-                podNotifications={podNotifications}
-                onSelectDispatch={setSelectedDispatch}
-                onSelectShipment={(shipment) => {
-                  setSelectedShipment(shipment);
-                  setSelectedClientId(shipment.clientId || null);
-                  setCurrentTab('clients');
+            {/* RBAC ACCESS GUARD: Unauthorized Tab Attempt */}
+            {!isTabAuthorized(userRole, currentTab) ? (
+              <AccessDeniedView
+                userRole={userRole}
+                user={currentUserProfile}
+                attemptedTab={currentTab}
+                onReturnToAuthorizedPortal={() => {
+                  if (userRole === 'coordinator') setCurrentTab('coordinator_portal');
+                  else if (userRole === 'driver_head') setCurrentTab('driver_head_portal');
+                  else if (userRole === 'encoder') setCurrentTab('forwarding_report');
+                  else setCurrentTab('dashboard');
                 }}
-                onSelectForwardingRecord={(rec) => {
-                  setSelectedForwardingRecord(rec);
-                  setIsForwardingDetailEditMode(false);
-                  setCurrentTab('forwarding_report');
-                }}
-                onNavigate={handleNavigate}
-                onSelectClientFromDashboard={handleSelectClientFromDashboard}
-                onOpenAddDispatchModal={() => {
-                  setPrefillDispatchData(null);
-                  setIsAddDispatchOpen(true);
-                }}
-                onOpenAddClientModal={handleOpenAddClientModal}
-                onOpenImportModal={(target) => setExcelImportTarget(target || 'forwarding')}
               />
-            )}
-
-            {/* TAB 2: DAILY DISPATCHING MONITORING */}
-            {currentTab === 'dispatch' && (
-              <DailyDispatchView
-                dispatches={dispatches}
-                onSelectDispatch={setSelectedDispatch}
-                onOpenAddModal={() => {
-                  setPrefillDispatchData(null);
-                  setIsAddDispatchOpen(true);
-                }}
-                onOpenImportModal={() => setExcelImportTarget('dispatch')}
-                onUpdateDispatches={handleUpdateDispatches}
-                onRequestDeleteDispatch={handleRequestDeleteDispatch}
-                dispatchNotifications={dispatchNotifications}
-                onCompleteDispatchNotification={handleCompleteDispatchFromNotification}
-                onDismissDispatchNotification={handleDismissDispatchNotification}
-                clients={clients}
-              />
-            )}
-
-            {/* TAB: CLIENT MANAGEMENT */}
-            {currentTab === 'client_management' && (
+            ) : (
               <>
-                {selectedManagementClient ? (
-                  <ClientDetailView
-                    client={selectedManagementClient}
-                    dispatches={dispatches}
-                    shipments={shipments}
+                {/* TAB: COORDINATOR DEDICATED PORTAL */}
+                {currentTab === 'coordinator_portal' && (
+                  <CoordinatorPortalView
+                    currentUser={currentUserProfile}
+                    forwardingRecords={roleScopedForwardingRecords}
+                    dispatches={roleScopedDispatches}
+                    shipments={roleScopedShipments}
+                    clients={roleScopedClients}
+                    onSelectForwardingRecord={(rec) => {
+                      setSelectedForwardingRecord(rec);
+                      setIsForwardingDetailEditMode(false);
+                      setCurrentTab('forwarding_report');
+                    }}
+                    onNavigateToForwarding={() => setCurrentTab('forwarding_report')}
+                    onNavigateToShipments={() => setCurrentTab('clients')}
+                  />
+                )}
+
+                {/* TAB: DRIVER HEAD FLEET & DISPATCH OPERATIONS PORTAL */}
+                {currentTab === 'driver_head_portal' && (
+                  <DriverHeadPortalView
+                    currentUser={currentUserProfile}
                     forwardingRecords={forwardingRecords}
-                    onBack={() => setSelectedManagementClient(null)}
-                    onEditClient={handleOpenEditClientModal}
-                    onDeactivateClient={handleOpenDeactivateClientModal}
-                    onReactivateClient={handleOpenReactivateClientModal}
-                    onDeleteClient={handleRequestDeleteClient}
-                    onSelectDispatch={setSelectedDispatch}
-                    onSelectShipment={setSelectedShipment}
+                    dispatches={dispatches}
                     onSelectForwardingRecord={(rec) => {
                       setSelectedForwardingRecord(rec);
                       setIsForwardingDetailEditMode(false);
                       setCurrentTab('forwarding_report');
                     }}
                   />
-                ) : (
-                  <ClientManagementView
-                    clients={clients}
+                )}
+
+                {/* TAB 1: DASHBOARD */}
+                {currentTab === 'dashboard' && (
+                  <DashboardView
+                    dispatches={roleScopedDispatches}
+                    shipments={roleScopedShipments}
+                    forwardingRecords={roleScopedForwardingRecords}
+                    clients={roleScopedClients}
+                    dispatchNotifications={dispatchNotifications}
+                    podNotifications={podNotifications}
+                    onSelectDispatch={setSelectedDispatch}
+                    onSelectShipment={(shipment) => {
+                      setSelectedShipment(shipment);
+                      setSelectedClientId(shipment.clientId || null);
+                      setCurrentTab('clients');
+                    }}
+                    onSelectForwardingRecord={(rec) => {
+                      setSelectedForwardingRecord(rec);
+                      setIsForwardingDetailEditMode(false);
+                      setCurrentTab('forwarding_report');
+                    }}
+                    onNavigate={handleNavigate}
+                    onSelectClientFromDashboard={handleSelectClientFromDashboard}
+                    onOpenAddDispatchModal={() => {
+                      setPrefillDispatchData(null);
+                      setIsAddDispatchOpen(true);
+                    }}
+                    onOpenAddClientModal={handleOpenAddClientModal}
+                    onOpenImportModal={(target) => setExcelImportTarget(target || 'forwarding')}
+                  />
+                )}
+
+                {/* TAB 2: DAILY DISPATCHING MONITORING */}
+                {currentTab === 'dispatch' && (
+                  <DailyDispatchView
+                    dispatches={roleScopedDispatches}
+                    onSelectDispatch={setSelectedDispatch}
+                    onOpenAddModal={() => {
+                      setPrefillDispatchData(null);
+                      setIsAddDispatchOpen(true);
+                    }}
+                    onOpenImportModal={() => setExcelImportTarget('dispatch')}
+                    onUpdateDispatches={handleUpdateDispatches}
+                    onRequestDeleteDispatch={handleRequestDeleteDispatch}
+                    dispatchNotifications={dispatchNotifications}
+                    onCompleteDispatchNotification={handleCompleteDispatchFromNotification}
+                    onDismissDispatchNotification={handleDismissDispatchNotification}
+                    clients={roleScopedClients}
+                    onAssignDriver={(record) => {
+                      setAssignDriverTarget({
+                        id: record.id,
+                        podNumber: record.podNumber,
+                        referenceNumber: record.manifestNumber,
+                        client: record.clientName || 'General Client',
+                        consignee: record.consignee,
+                        area: record.deliveryArea || record.area || 'Luzon',
+                        destination: record.destination,
+                        plannedDeliveryDate: record.plannedDeliveryDate || record.deliveryDate,
+                        quantity: record.quantityCasesBoxes,
+                        unit: record.unit,
+                        driverName: record.driverName || record.assignedDriver,
+                        plateNumber: record.plateNumber,
+                        truckProvider: record.truckProvider,
+                      });
+                    }}
+                  />
+                )}
+
+                {/* TAB: CLIENT MANAGEMENT */}
+                {currentTab === 'client_management' && (
+                  <>
+                    {selectedManagementClient ? (
+                      <ClientDetailView
+                        client={selectedManagementClient}
+                        dispatches={roleScopedDispatches}
+                        shipments={roleScopedShipments}
+                        forwardingRecords={roleScopedForwardingRecords}
+                        onBack={() => setSelectedManagementClient(null)}
+                        onEditClient={handleOpenEditClientModal}
+                        onDeactivateClient={handleOpenDeactivateClientModal}
+                        onReactivateClient={handleOpenReactivateClientModal}
+                        onDeleteClient={handleRequestDeleteClient}
+                        onSelectDispatch={setSelectedDispatch}
+                        onSelectShipment={setSelectedShipment}
+                        onSelectForwardingRecord={(rec) => {
+                          setSelectedForwardingRecord(rec);
+                          setIsForwardingDetailEditMode(false);
+                          setCurrentTab('forwarding_report');
+                        }}
+                      />
+                    ) : (
+                      <ClientManagementView
+                        clients={roleScopedClients}
+                        dispatches={roleScopedDispatches}
+                        shipments={roleScopedShipments}
+                        forwardingRecords={roleScopedForwardingRecords}
+                        onSelectClient={setSelectedManagementClient}
+                        onOpenAddClientModal={handleOpenAddClientModal}
+                        onEditClient={handleOpenEditClientModal}
+                        onDeactivateClient={handleOpenDeactivateClientModal}
+                        onReactivateClient={handleOpenReactivateClientModal}
+                        onDeleteClient={handleRequestDeleteClient}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* TAB 3: CLIENT SHIPMENT MONITORING */}
+                {currentTab === 'clients' && (
+                  <>
+                    {selectedShipment ? (
+                      <ClientShipmentDetailView
+                        shipment={selectedShipment}
+                        onBack={() => setSelectedShipment(null)}
+                        onUpdateShipment={handleUpdateShipment}
+                        onRequestDeleteShipment={handleRequestDeleteShipment}
+                      />
+                    ) : (
+                      <ClientShipmentView
+                        shipments={roleScopedShipments}
+                        clients={roleScopedClients}
+                        selectedClientId={selectedClientId}
+                        onSelectClient={setSelectedClientId}
+                        onSelectShipment={setSelectedShipment}
+                        onRequestDeleteShipment={handleRequestDeleteShipment}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* TAB 4: FORWARDING PROGRESSIVE REPORT */}
+                {currentTab === 'forwarding_report' && (
+                  <ForwardingProgressiveView
+                    records={roleScopedForwardingRecords}
+                    clients={roleScopedClients}
+                    onSelectRecord={(rec) => {
+                      setSelectedForwardingRecord(rec);
+                      setIsForwardingDetailEditMode(false);
+                    }}
+                    onOpenAddModal={() => setIsAddForwardingOpen(true)}
+                    onOpenImportModal={() => setExcelImportTarget('forwarding')}
+                    onRequestDeleteRecord={handleRequestDeleteForwarding}
+                    onEditRecord={(rec) => {
+                      setSelectedForwardingRecord(rec);
+                      setIsForwardingDetailEditMode(true);
+                    }}
+                    onAssignDriver={(rec) => {
+                      setAssignDriverTarget({
+                        id: rec.id,
+                        podNumber: rec.podNumber,
+                        referenceNumber: rec.referenceNumber,
+                        client: rec.client,
+                        consignee: rec.consignee,
+                        area: rec.area,
+                        destination: rec.destinationCode,
+                        plannedDeliveryDate: rec.expectedDeliveryDate,
+                        quantity: rec.quantity,
+                        unit: rec.unit,
+                        driverName: rec.driverName || rec.assignedDriver,
+                        courier: rec.courier,
+                      });
+                    }}
+                  />
+                )}
+
+                {/* TAB 5: LOGISTICS & SLA REPORTS */}
+                {currentTab === 'reports' && (
+                  <ReportsView />
+                )}
+
+                {/* TAB 6: RECENTLY DELETED / TRASH (RECOVERY VIEW) */}
+                {currentTab === 'trash' && (
+                  <RecentlyDeletedView
                     dispatches={dispatches}
                     shipments={shipments}
                     forwardingRecords={forwardingRecords}
-                    onSelectClient={setSelectedManagementClient}
-                    onOpenAddClientModal={handleOpenAddClientModal}
-                    onEditClient={handleOpenEditClientModal}
-                    onDeactivateClient={handleOpenDeactivateClientModal}
-                    onReactivateClient={handleOpenReactivateClientModal}
-                    onDeleteClient={handleRequestDeleteClient}
-                  />
-                )}
-              </>
-            )}
-
-            {/* TAB 3: CLIENT SHIPMENT MONITORING */}
-            {currentTab === 'clients' && (
-              <>
-                {selectedShipment ? (
-                  <ClientShipmentDetailView
-                    shipment={selectedShipment}
-                    onBack={() => setSelectedShipment(null)}
-                    onUpdateShipment={handleUpdateShipment}
-                    onRequestDeleteShipment={handleRequestDeleteShipment}
-                  />
-                ) : (
-                  <ClientShipmentView
-                    shipments={shipments}
                     clients={clients}
-                    selectedClientId={selectedClientId}
-                    onSelectClient={setSelectedClientId}
-                    onSelectShipment={setSelectedShipment}
-                    onRequestDeleteShipment={handleRequestDeleteShipment}
+                    onRestoreRecord={handleRestoreFromTrash}
+                    onPermanentDeleteRecord={(type, id) => {
+                      handleRequestPermanentDelete(type, id, id, 'Record');
+                    }}
+                    onRequestPermanentDelete={handleRequestPermanentDelete}
                   />
                 )}
+
+                {/* TAB 7: SETTINGS VIEW */}
+                {currentTab === 'settings' && (
+                  <SettingsView />
+                )}
               </>
-            )}
-
-            {/* TAB 4: FORWARDING PROGRESSIVE REPORT */}
-            {currentTab === 'forwarding_report' && (
-              <ForwardingProgressiveView
-                records={forwardingRecords}
-                clients={clients}
-                onSelectRecord={(rec) => {
-                  setSelectedForwardingRecord(rec);
-                  setIsForwardingDetailEditMode(false);
-                }}
-                onOpenAddModal={() => setIsAddForwardingOpen(true)}
-                onOpenImportModal={() => setExcelImportTarget('forwarding')}
-                onRequestDeleteRecord={handleRequestDeleteForwarding}
-                onEditRecord={(rec) => {
-                  setSelectedForwardingRecord(rec);
-                  setIsForwardingDetailEditMode(true);
-                }}
-              />
-            )}
-
-            {/* TAB 5: LOGISTICS & SLA REPORTS */}
-            {currentTab === 'reports' && (
-              <ReportsView
-                dispatches={dispatches}
-                shipments={shipments}
-                forwardingRecords={forwardingRecords}
-                clients={clients}
-                onSelectDispatch={setSelectedDispatch}
-                onSelectShipment={setSelectedShipment}
-              />
-            )}
-
-            {/* TAB 6: RECENTLY DELETED / TRASH (RECOVERY VIEW) */}
-            {currentTab === 'trash' && (
-              <RecentlyDeletedView
-                dispatches={dispatches}
-                shipments={shipments}
-                forwardingRecords={forwardingRecords}
-                clients={clients}
-                onRestore={handleRestoreFromTrash}
-                onPermanentDelete={handleRequestPermanentDelete}
-              />
-            )}
-
-            {/* TAB 7: SETTINGS VIEW */}
-            {currentTab === 'settings' && (
-              <SettingsView
-                onAddNewClient={handleAddNewClient}
-                onSaveClient={handleSaveClientFromForm}
-                clients={clients}
-              />
             )}
 
           </div>
@@ -812,8 +988,13 @@ export default function App() {
         <DispatchDetailModal
           dispatch={selectedDispatch}
           onClose={() => setSelectedDispatch(null)}
-          onSave={handleSaveSingleDispatch}
+          onSelectClient={(cName) => {
+            setSelectedClientId(cName);
+            setCurrentTab('clients');
+          }}
+          onSaveDispatch={handleSaveSingleDispatch}
           onRequestDelete={handleRequestDeleteDispatch}
+          clients={clients}
         />
       )}
 
@@ -853,7 +1034,7 @@ export default function App() {
         <SafeDeleteModal
           isOpen={!!safeDeleteTarget}
           recordType={safeDeleteTarget.type}
-          identifier={safeDeleteTarget.identifier}
+          recordIdentifier={safeDeleteTarget.identifier}
           clientName={safeDeleteTarget.clientName}
           additionalInfo={safeDeleteTarget.additionalInfo}
           onClose={() => setSafeDeleteTarget(null)}
@@ -866,7 +1047,7 @@ export default function App() {
         <PermanentDeleteModal
           isOpen={!!permanentDeleteTarget}
           recordType={permanentDeleteTarget.type}
-          identifier={permanentDeleteTarget.identifier}
+          recordIdentifier={permanentDeleteTarget.identifier}
           clientName={permanentDeleteTarget.clientName}
           onClose={() => setPermanentDeleteTarget(null)}
           onConfirm={handleConfirmPermanentDelete}
@@ -878,9 +1059,12 @@ export default function App() {
         <ClientDeactivateModal
           isOpen={!!clientDeactivateTarget}
           client={clientDeactivateTarget}
-          dispatchesCount={dispatches.filter(d => d.clientName.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length}
-          shipmentsCount={shipments.filter(s => s.clientId === clientDeactivateTarget.id || s.client.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length}
-          forwardingCount={forwardingRecords.filter(f => f.clientId === clientDeactivateTarget.id || f.client.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length}
+          hasHistoricalRecords={true}
+          historicalRecordsCount={
+            dispatches.filter(d => d.clientName.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length +
+            shipments.filter(s => s.clientId === clientDeactivateTarget.id || s.client.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length +
+            forwardingRecords.filter(f => f.clientId === clientDeactivateTarget.id || f.client.toLowerCase() === clientDeactivateTarget.name.toLowerCase()).length
+          }
           onClose={() => setClientDeactivateTarget(null)}
           onConfirmDeactivate={handleConfirmDeactivateClient}
         />
@@ -893,7 +1077,7 @@ export default function App() {
           clientToEdit={clientFormModal.clientToEdit}
           initialClientName={clientFormModal.initialClientName}
           onClose={() => setClientFormModal({ isOpen: false, clientToEdit: null, initialClientName: undefined })}
-          onSave={handleSaveClientFromForm}
+          onSaveClient={handleSaveClientFromForm}
         />
       )}
 
@@ -903,9 +1087,6 @@ export default function App() {
           isOpen={clientStatusToggle.isOpen}
           client={clientStatusToggle.client}
           mode={clientStatusToggle.mode}
-          dispatchesCount={dispatches.filter(d => d.clientName.toLowerCase() === clientStatusToggle.client?.name.toLowerCase()).length}
-          shipmentsCount={shipments.filter(s => s.clientId === clientStatusToggle.client?.id || s.client.toLowerCase() === clientStatusToggle.client?.name.toLowerCase()).length}
-          forwardingCount={forwardingRecords.filter(f => f.clientId === clientStatusToggle.client?.id || f.client.toLowerCase() === clientStatusToggle.client?.name.toLowerCase()).length}
           onClose={() => setClientStatusToggle({ isOpen: false, client: null, mode: 'deactivate' })}
           onConfirm={handleConfirmClientStatusToggle}
         />
@@ -961,6 +1142,15 @@ export default function App() {
           }
         }}
       />
+
+      {/* 12. Driver Assignment Modal */}
+      {assignDriverTarget && (
+        <AssignDriverModal
+          isOpen={!!assignDriverTarget}
+          onClose={() => setAssignDriverTarget(null)}
+          target={assignDriverTarget}
+        />
+      )}
 
     </div>
   );

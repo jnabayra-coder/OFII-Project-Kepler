@@ -6,7 +6,9 @@ import {
   UserProfile, 
   ForwardingProgressiveRecord,
   UnifiedShipment,
-  ForwardingDispatchNotification
+  ForwardingDispatchNotification,
+  OFIIDriver,
+  DriverAssignmentNotification
 } from '../types';
 import { 
   unifiedToDispatch, 
@@ -15,14 +17,68 @@ import {
   recalculateUnifiedShipment 
 } from '../utils/dataSync';
 
-export const currentUser: UserProfile = {
+export const DEFAULT_ENCODER_USER: UserProfile = {
   name: 'Juan Dela Cruz',
   role: 'Operations Officer',
+  userRole: 'encoder',
   department: 'Domestic Freight & Logistics Monitoring',
-  email: 'j.delacruz@orientfreight.com',
+  email: 'ops.officer@orientfreight.com',
   employeeId: 'OFII-MNL-2041',
   hubLocation: 'OFII Central Hub, Paranaque City, Metro Manila',
 };
+
+export const currentUser: UserProfile = DEFAULT_ENCODER_USER;
+
+export const OFII_DRIVERS_ROSTER: OFIIDriver[] = [
+  {
+    id: 'DRV-001',
+    name: 'Danilo P. Hernandez',
+    contactNumber: '+63 917 842 1190',
+    defaultPlate: 'NDB-4921',
+    vehicleType: '6-Wheeler Forward Truck',
+    status: 'On Delivery',
+  },
+  {
+    id: 'DRV-002',
+    name: 'Ramon S. Valdez',
+    contactNumber: '+63 920 551 8933',
+    defaultPlate: 'CAE-8120',
+    vehicleType: '10-Wheeler Wing Van',
+    status: 'Available',
+  },
+  {
+    id: 'DRV-003',
+    name: 'Edgardo B. Morales',
+    contactNumber: '+63 928 411 9022',
+    defaultPlate: 'NFC-9912',
+    vehicleType: '4-Wheeler Closed Van',
+    status: 'On Delivery',
+  },
+  {
+    id: 'DRV-004',
+    name: 'Roberto M. Santos',
+    contactNumber: '+63 919 330 1944',
+    defaultPlate: 'WBC-7721',
+    vehicleType: '6-Wheeler Closed Van',
+    status: 'Available',
+  },
+  {
+    id: 'DRV-005',
+    name: 'Eduardo G. Reyes',
+    contactNumber: '+63 918 620 4481',
+    defaultPlate: 'TXZ-8491',
+    vehicleType: '10-Wheeler Wing Van',
+    status: 'Available',
+  },
+  {
+    id: 'DRV-006',
+    name: 'Arnel B. Castro',
+    contactNumber: '+63 921 784 9912',
+    defaultPlate: 'NBD-3021',
+    vehicleType: '4-Wheeler Utility / L300',
+    status: 'Available',
+  },
+];
 
 export const dashboardSummaryData: DashboardSummary = {
   totalShipments: 148,
@@ -205,6 +261,63 @@ export const initialClients: ClientSummary[] = [
  * - Dashboard Overview
  */
 export const initialUnifiedShipments: UnifiedShipment[] = [
+  // Record 0: Coordinator-Created Delivery DEL-0001 (Phase 1 Acceptance Test & Live Operations)
+  recalculateUnifiedShipment({
+    id: 'DEL-0001',
+    client: 'Example Client',
+    clientId: 'client-example',
+    coordinator: 'Alodia Manalansan',
+    month: 'September 2026',
+    deliveryType: 'Land Freight',
+    modeOfShipment: 'Land Freight',
+    area: 'Luzon',
+    referenceNumber: 'REF-DEL-0001',
+    originPickupPoint: 'OFII Central Terminal Paranaque',
+    destination: 'Example Destination',
+    destinationCode: 'LZN-01',
+    consignee: 'Example Receiver',
+    contactNumber: '+63 917 555 0101',
+    itemDescription: 'Commercial Package Consignment',
+    quantity: 10,
+    unit: 'Boxes',
+    declaredValue: 'PHP 120,000.00',
+    chargeableWeightFees: 'PHP 3,500.00',
+    chargePerWeight: 'PHP 25.00 / kg',
+    cbm: 1.2,
+    volumeWeightKg: 180,
+    actualWeightKg: 150,
+    truckProvider: 'OFII Dedicated Fleet',
+    courier: 'OFII Dedicated Transport',
+    plateNumber: '',
+    vanNumber: '',
+    driverName: '',
+    driverContact: '',
+    actualDispatchDate: '2026-09-09',
+    deliveryDate: '2026-09-12',
+    plannedDeliveryDate: '2026-09-12',
+    requestDeliveryDate: '2026-09-12',
+    podNumber: 'POD-DEL-0001',
+    manifestNumber: 'MNF-DEL-0001',
+    awbNumber: 'AWB-DEL-0001',
+    awbCourierRefNumber: 'AWB-DEL-0001',
+    drNumber: 'DR-DEL-0001',
+    sealNumber: 'SEAL-DEL-0001',
+    billOfLandingNumber: 'BL-DEL-0001',
+    remarks: 'Original coordinator delivery ready for driver assignment.',
+    deliveryRemarks: 'Pending driver head assignment.',
+    dispatchStatus: 'Pending Pickup',
+    shipmentStatus: 'Booked',
+    deliveryStatus: 'Pending Delivery',
+    deliveryLeadTimeDays: 3,
+    deliveryTatDays: 0,
+    deliveryPerformance: 'PENDING',
+    podStatus: 'Pending Return',
+    podLeadTimeDays: 3,
+    podTatDays: 0,
+    podPerformance: 'PENDING',
+    tatNumber: 'TAT-DEL-0001',
+  }),
+
   // Record 1: Vamsler Philippines Land Freight to South Luzon
   recalculateUnifiedShipment({
     id: 'DSP-2026-0801',
@@ -1024,4 +1137,70 @@ export const initialDispatchNotifications: ForwardingDispatchNotification[] = [
     status: 'NEW',
     createdAt: '2026-08-24T08:15:00Z',
   }
+];
+
+export const initialDriverNotifications: DriverAssignmentNotification[] = [
+  {
+    id: 'DAN-2026-001',
+    driverName: 'Danilo P. Hernandez',
+    recordId: 'DSP-2026-0801',
+    podNumber: 'POD-884920',
+    referenceNumber: 'PRJ-VAM-001',
+    client: 'Vamsler Philippines',
+    consignee: 'Vamsler Distribution Hub',
+    area: 'Luzon',
+    destination: 'Laguna Technopark, Biñan, Laguna',
+    deliveryDate: '2026-08-27',
+    dispatchTime: '08:15 AM',
+    vehicle: 'OFII Fleet Logistics',
+    plateNumber: 'NDB-4921',
+    quantity: 450,
+    unit: 'Boxes',
+    title: 'NEW DELIVERY ASSIGNMENT',
+    message: 'You have been assigned to a delivery. Consignee: Vamsler Distribution Hub at Laguna Technopark.',
+    createdAt: '2026-08-23T08:15:00Z',
+    isRead: false,
+  },
+  {
+    id: 'DAN-2026-002',
+    driverName: 'Ramon S. Valdez',
+    recordId: 'DSP-2026-0802',
+    podNumber: 'POD-884921',
+    referenceNumber: 'PRJ-PCSO-001',
+    client: 'Philippine Charity Sweepstakes Office',
+    consignee: 'PCSO Logistics Operations Branch',
+    area: 'Luzon',
+    destination: 'Mandaluyong Operations Center',
+    deliveryDate: '2026-08-23',
+    dispatchTime: '08:20 AM',
+    vehicle: 'Fast Logistics Carrier',
+    plateNumber: 'CAE-8120',
+    quantity: 320,
+    unit: 'Cases',
+    title: 'NEW DELIVERY ASSIGNMENT',
+    message: 'You have been assigned to a delivery. Consignee: PCSO Logistics Operations Branch at Mandaluyong Operations Center.',
+    createdAt: '2026-08-22T08:20:00Z',
+    isRead: true,
+  },
+  {
+    id: 'DAN-2026-003',
+    driverName: 'Edgardo B. Morales',
+    recordId: 'DSP-2026-0803',
+    podNumber: 'POD-884922',
+    referenceNumber: 'PRJ-GADC-002',
+    client: 'Golden Archers Development Corporation',
+    consignee: 'Mindanao Regional Distribution Center',
+    area: 'Mindanao',
+    destination: 'Buhangin Depot, Davao City',
+    deliveryDate: '2026-08-28',
+    dispatchTime: '09:00 AM',
+    vehicle: '2GO Freight Partner',
+    plateNumber: 'NFC-9912',
+    quantity: 680,
+    unit: 'Cartons',
+    title: 'NEW DELIVERY ASSIGNMENT',
+    message: 'You have been assigned to a delivery. Consignee: Mindanao Regional Distribution Center at Buhangin Depot, Davao City.',
+    createdAt: '2026-08-23T09:00:00Z',
+    isRead: false,
+  },
 ];

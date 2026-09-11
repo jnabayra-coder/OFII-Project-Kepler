@@ -12,8 +12,12 @@ import {
   User, 
   IdCard, 
   Briefcase, 
-  Layers
+  Layers,
+  Truck,
+  ShieldCheck
 } from 'lucide-react';
+import { UserRole, UserProfile } from '../types';
+import { registerNewUserAccount } from '../data/userAccounts';
 
 interface CreateAccountScreenProps {
   onBackToLogin: () => void;
@@ -23,12 +27,15 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({ onBack
   // Form Fields
   const [fullName, setFullName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
+  const [userRole, setUserRole] = useState<UserRole>('coordinator');
   const [department, setDepartment] = useState('Domestic Operations & Dispatch');
-  const [position, setPosition] = useState('');
+  const [position, setPosition] = useState('Operations Coordinator');
   const [emailAddress, setEmailAddress] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [assignedClientsInput, setAssignedClientsInput] = useState('Philippine Charity Sweepstakes Office (PCSO), Alexandria Commercial, Inc.');
+  const [vehiclePlate, setVehiclePlate] = useState('NDB-4921');
 
   // UI States
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -38,8 +45,29 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({ onBack
     employeeId: string;
     department: string;
     emailAddress: string;
+    role: UserRole;
     requestRef: string;
   } | null>(null);
+
+  const handleRoleChange = (role: UserRole) => {
+    setUserRole(role);
+    if (role === 'office_head') {
+      setDepartment('Executive Operations & Freight Monitoring');
+      setPosition('Office Head / Operations Director');
+    } else if (role === 'coordinator') {
+      setDepartment('Client Account Coordination');
+      setPosition('Account Logistics Coordinator');
+    } else if (role === 'encoder') {
+      setDepartment('Domestic Forwarding Data Operations');
+      setPosition('Logistics Data Encoder');
+    } else if (role === 'driver_head') {
+      setDepartment('Fleet Management & Dispatch');
+      setPosition('Head of Drivers & Fleet Dispatch');
+    } else if (role === 'driver') {
+      setDepartment('Fleet & Logistics Transport');
+      setPosition('OFII Dedicated Driver');
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,14 +83,37 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({ onBack
       return;
     }
 
-    // Generate prototype request reference number
-    const refCode = `REQ-OFII-${Math.floor(100000 + Math.random() * 900000)}`;
+    const assignedClients = userRole === 'coordinator' 
+      ? assignedClientsInput.split(',').map(c => c.trim()).filter(Boolean)
+      : undefined;
+
+    const newProfile: UserProfile = {
+      name: fullName.trim(),
+      role: position.trim() || 'Logistics Personnel',
+      userRole,
+      department: department.trim(),
+      email: emailAddress.trim().toLowerCase(),
+      employeeId: employeeId.trim() || `OFII-${Date.now().toString().slice(-4)}`,
+      hubLocation: 'OFII Central Cargo Hub, Paranaque',
+      password,
+      isActive: true,
+      assignedClients,
+      driverName: userRole === 'driver' ? fullName.trim() : undefined,
+      vehiclePlate: userRole === 'driver' ? vehiclePlate.trim() : undefined,
+    };
+
+    // Register into system
+    registerNewUserAccount(newProfile);
+
+    // Generate request reference number
+    const refCode = `REG-OFII-${Math.floor(100000 + Math.random() * 900000)}`;
 
     setSubmittedData({
       fullName,
-      employeeId,
+      employeeId: newProfile.employeeId,
       department,
       emailAddress,
+      role: userRole,
       requestRef: refCode
     });
 
@@ -153,6 +204,55 @@ export const CreateAccountScreen: React.FC<CreateAccountScreenProps> = ({ onBack
               {/* Registration Form */}
               <form onSubmit={handleSubmit} className="space-y-4 text-xs text-slate-700">
                 
+                {/* Role Selection */}
+                <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg">
+                  <label className="block text-[11px] font-bold uppercase text-blue-900 tracking-wider mb-1.5 flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-blue-700" />
+                    Assigned Personnel Role & Access Level <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    value={userRole}
+                    onChange={(e) => handleRoleChange(e.target.value as UserRole)}
+                    className="block w-full py-2 px-3 text-xs text-slate-900 font-bold bg-white border border-blue-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-600 cursor-pointer"
+                  >
+                    <option value="office_head">Office Head — Overall Operations & Executive Analytics</option>
+                    <option value="coordinator">Coordinator — Specific Client Account Management</option>
+                    <option value="encoder">Encoder — Forwarding Operations & Data Entry</option>
+                    <option value="driver_head">Driver Head — Fleet Management & Driver Assignments</option>
+                    <option value="driver">Driver — Dedicated Driver Delivery Portal</option>
+                  </select>
+
+                  {userRole === 'coordinator' && (
+                    <div className="mt-3 pt-2 border-t border-blue-200/80">
+                      <label className="block text-[10px] font-bold uppercase text-blue-950 mb-1">
+                        Assigned Client Accounts (comma-separated):
+                      </label>
+                      <input
+                        type="text"
+                        value={assignedClientsInput}
+                        onChange={(e) => setAssignedClientsInput(e.target.value)}
+                        placeholder="e.g. PCSO, Alexandria Commercial, Inc."
+                        className="w-full py-1.5 px-2.5 text-xs bg-white border border-blue-300 rounded text-slate-900 font-medium focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {userRole === 'driver' && (
+                    <div className="mt-3 pt-2 border-t border-blue-200/80">
+                      <label className="block text-[10px] font-bold uppercase text-blue-950 mb-1">
+                        Assigned Truck Plate Number:
+                      </label>
+                      <input
+                        type="text"
+                        value={vehiclePlate}
+                        onChange={(e) => setVehiclePlate(e.target.value)}
+                        placeholder="e.g. NDB-4921"
+                        className="w-full py-1.5 px-2.5 text-xs bg-white border border-blue-300 rounded text-slate-900 font-mono font-bold focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+                </div>
+
                 {/* Row 1: Full Name & Employee ID */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>

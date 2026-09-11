@@ -1029,6 +1029,42 @@ export const ForwardingDetailModal: React.FC<ForwardingDetailModalProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Driver Live Transit & Receiver Verification Status */}
+            <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-500 font-semibold uppercase block">Driver Reported Location</span>
+                <span className="font-semibold text-slate-800 flex items-center gap-1 mt-0.5">
+                  <span className="text-blue-600">📍</span>
+                  {formData.currentLocation || <span className="text-slate-400 font-normal italic">Hub / Not reported</span>}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-500 font-semibold uppercase block">Driver Progress Status</span>
+                <span className="font-semibold text-slate-800 flex items-center gap-1 mt-0.5">
+                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-bold text-[10px] uppercase border border-blue-200">
+                    {formData.driverProgressStatus || formData.deliveryStatus || 'In Transit'}
+                  </span>
+                  {formData.progressUpdatedAt && (
+                    <span className="text-[10px] text-slate-400">
+                      {new Date(formData.progressUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-500 font-semibold uppercase block">Physical Date Received</span>
+                <span className="font-mono font-bold text-slate-900 block mt-0.5">
+                  {formData.dateReceived || formData.actualDeliveryDate || <span className="text-slate-400 font-normal italic">Pending</span>}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-500 font-semibold uppercase block">Receiver Acknowledgment</span>
+                <span className="font-mono text-slate-700 text-[11px] block mt-0.5 truncate" title={formData.receiverSignature || 'Standard Consignee Stamp'}>
+                  {formData.receiverSignature || (formData.actualDeliveryDate ? 'Physical POD Stamped' : 'Pending Acceptance')}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* SECTION 6: DELIVERY PERFORMANCE (AUTO-CALCULATED) */}

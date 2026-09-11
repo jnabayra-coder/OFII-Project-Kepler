@@ -225,9 +225,9 @@ export function syncPodNotifications(
     }
   }
 
-  // Also retain any prior historical notifications that the user might have already read or received
+  // Also retain any prior historical notifications or special events (e.g. DELIVERY_COMPLETED)
   for (const existing of existingNotifications) {
-    if (!activeDedupKeys.has(existing.dedupKey)) {
+    if (existing.type === 'DELIVERY_COMPLETED' || !activeDedupKeys.has(existing.dedupKey)) {
       // Keep completed/historical notifications if already read or existing in history
       if (!synchronized.some((s) => s.id === existing.id || s.dedupKey === existing.dedupKey)) {
         synchronized.push(existing);
